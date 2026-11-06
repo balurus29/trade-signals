@@ -1,8 +1,8 @@
-"""Ядро анализа (только numpy, без pandas) - подходит для сборки под Android.
-Это инструмент анализа, а не гарантия прибыли."""
+"""Ядро анализа (только numpy). Это инструмент анализа, а не гарантия прибыли."""
 import datetime as dt
 import json
 import ssl
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -12,6 +12,16 @@ YF_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{s}"
 SPECIAL = {"XAUUSD": "GC=F", "XAGUSD": "SI=F", "USOIL": "CL=F", "UKOIL": "BZ=F",
            "US500": "^GSPC", "NAS100": "^NDX", "US30": "^DJI"}
 CRYPTO = {"BTC", "ETH", "LTC", "XRP", "BNB", "SOL", "DOGE", "ADA"}
+
+# методы анализа: ключ -> (название, максимум баллов метода)
+METHODS = {
+    "tech": ("Технический", 50),
+    "levels": ("Уровни", 15),
+    "candles": ("Свечи", 20),
+    "patterns": ("Фигуры", 25),
+    "news": ("Фундаментал", 0),
+}
+ALL_METHODS = set(METHODS)
 
 
 def now_utc():
@@ -32,7 +42,7 @@ def to_yahoo(sym):
     return s
 
 
-def fetch(sym, interval="5m", rng=None):
+def _fetch_yahoo(sym, interval="5m", rng=None):
     rng = rng or ("1mo" if interval in ("1h", "60m") else "5d")
     try:
         import certifi
@@ -49,6 +59,119 @@ def fetch(sym, interval="5m", rng=None):
     rows = [x for x in zip(q["open"], q["high"], q["low"], q["close"]) if None not in x]
     a = np.array(rows, dtype=float)
     return {"o": a[:, 0], "h": a[:, 1], "l": a[:, 2], "c": a[:, 3]}
+
+
+# ───────── OTC через OTCharts (Pocket Option) ─────────
+OTC_URL = "https://otcharts.com/v1/candles"
+OTC_KEY = ""          # задаётся из приложения (вводится на телефоне, в чат не отправляется)
+TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600}
+OTC_ERRORS = {
+    400: "Неверный символ или таймфрейм для OTC",
+    401: "API-ключ OTCharts не подошёл (проверьте ключ и подтверждение почты)",
+    403: "Ваш тариф OTCharts не открывает этот инструмент",
+    404: "Символ не найден в каталоге Pocket Option OTC",
+    429: "Исчерпана дневная квота запросов OTCharts",
+    502: "Источник котировок временно не отвечает",
+}
+
+
+def is_otc(sym):
+    return sym.strip().lower().endswith("_otc")
+
+
+def fetch_otc(sym, interval="5m", limit=200):
+    if not OTC_KEY:
+        raise RuntimeError("Введите API-ключ OTCharts в поле «API-ключ OTC»")
+    tf = TF_SECONDS.get(interval, 300)
+    url = OTC_URL + "?" + urllib.parse.urlencode(
+        {"venue": "otc", "symbol": sym.strip().replace("/", ""), "tf": tf, "limit": limit})
+    req = urllib.request.Request(url, headers={
+        "Authorization": "Bearer " + OTC_KEY.strip(),
+        "User-Agent": "TradeSignalsApp/1.0",      # со стандартным urllib CDN отвечает 403 (1010)
+        "Accept": "application/json"})
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        ctx = ssl.create_default_context()
+    try:
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as r:
+            data = json.load(r)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(OTC_ERRORS.get(e.code, f"OTCharts: ошибка {e.code}"))
+    rows = sorted(data.get("candles", []), key=lambda x: x["time"])
+    if not rows:
+        raise RuntimeError("OTCharts не вернул свечей")
+    a = np.array([[x["open"], x["high"], x["low"], x["close"]] for x in rows], dtype=float)
+    return {"o": a[:, 0], "h": a[:, 1], "l": a[:, 2], "c": a[:, 3]}
+
+
+def fetch(sym, interval="5m", rng=None):
+    """OTC-символы (…_otc) идут через OTCharts, остальные через Yahoo Finance."""
+    if is_otc(sym):
+        return fetch_otc(sym, interval)
+    return _fetch_yahoo(sym, interval, rng)
+
+
+# ───────── каталог OTC (загружается из OTCharts одним запросом) ─────────
+OTC_CRYPTO = ("BTC", "ETH", "LTC", "XRP", "DOGE", "ADA", "SOL", "BNB", "TRX", "DOT", "AVAX", "LINK",
+              "MATIC", "SHIB", "TON", "BCH", "ATOM", "NEAR", "PEPE")
+OTC_COMM = ("XAU", "XAG", "XPT", "XPD", "BRENT", "CRUDE", "OIL", "GAS", "COPPER")
+OTC_LEGACY = "OTC Pocket Option"
+
+
+def group_otc(symbols):
+    g = {"OTC: Форекс": [], "OTC: Крипто": [], "OTC: Акции": [], "OTC: Металлы и сырьё": [], "OTC: Прочее": []}
+    for s in sorted(set(symbols)):
+        base = s[:-4] if s.lower().endswith("_otc") else s
+        up = base.upper()
+        if s.startswith("#"):
+            g["OTC: Акции"].append(s)
+        elif up.startswith(OTC_COMM) or any(k in up for k in ("BRENT", "CRUDE")):
+            g["OTC: Металлы и сырьё"].append(s)
+        elif any(up.startswith(k) for k in OTC_CRYPTO):
+            g["OTC: Крипто"].append(s)
+        elif len(base) == 6 and base.isalpha():
+            g["OTC: Форекс"].append(s)
+        else:
+            g["OTC: Прочее"].append(s)
+    return {k: v for k, v in g.items() if v}
+
+
+def apply_otc_catalog(symbols):
+    global OTC_ALL
+    groups = group_otc(symbols)
+    if not groups:
+        return 0
+    for k in [k for k in GROUPS if k.startswith("OTC")]:
+        del GROUPS[k]
+    GROUPS.update(groups)
+    OTC_ALL = [s for v in groups.values() for s in v]
+    return len(OTC_ALL)
+
+
+def load_otc_catalog():
+    """GET /v1/symbols?venue=otc (расходует 1 запрос квоты). Возвращает список символов."""
+    if not OTC_KEY:
+        raise RuntimeError("Введите API-ключ OTCharts в поле «API-ключ OTC»")
+    req = urllib.request.Request(
+        "https://otcharts.com/v1/symbols?venue=otc",
+        headers={"Authorization": "Bearer " + OTC_KEY.strip(),
+                 "User-Agent": "TradeSignalsApp/1.0", "Accept": "application/json"})
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        ctx = ssl.create_default_context()
+    try:
+        with urllib.request.urlopen(req, timeout=20, context=ctx) as r:
+            data = json.load(r)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(OTC_ERRORS.get(e.code, f"OTCharts: ошибка {e.code}"))
+    syms = [x["symbol"] for x in data.get("symbols", []) if x.get("symbol")]
+    if not syms:
+        raise RuntimeError("OTCharts не вернул список инструментов")
+    return syms
 
 
 def demo_data(n=400, seed=None):
@@ -251,25 +374,47 @@ def in_blackout(windows):
     return None
 
 
-def analyze(d, threshold=35, blackout=None):
-    """Возвращает dict: kind (call/put/wait/pause), signal, score, conf, parts, price."""
+def analyze(d, threshold=35, blackout=None, methods=None):
+    """methods: набор ключей из METHODS (None = все).
+    Возвращает dict: kind (call/put/wait/pause), signal, score, conf, parts, price, thr."""
+    methods = set(methods) if methods is not None else set(ALL_METHODS)
     if len(d["c"]) < 80:
         return None
+    price = float(d["c"][-1])
+    directional = methods & {"tech", "levels", "candles", "patterns"}
+    if not directional:
+        msg = ("Фундаментал сам направление не даёт: он только блокирует сигналы в окна новостей. "
+               "Добавьте ещё один метод." if "news" in methods else "Выберите хотя бы один метод анализа.")
+        return {"kind": "wait", "signal": "ВЫБЕРИТЕ МЕТОД", "score": 0, "conf": 0,
+                "parts": [(0, msg)], "price": price, "thr": 0}
     d = {k: v[-150:] for k, v in d.items()}
     hi, lo = pivots(d)
-    parts = trend_and_momentum(d) + support_resistance(d, hi, lo) + candle_patterns(d) + chart_patterns(d, hi, lo)
+    parts = []
+    if "tech" in methods:
+        parts += trend_and_momentum(d)
+    if "levels" in methods:
+        parts += support_resistance(d, hi, lo)
+    if "candles" in methods:
+        parts += candle_patterns(d)
+    if "patterns" in methods:
+        parts += chart_patterns(d, hi, lo)
+
+    cap = sum(METHODS[m][1] for m in directional)
+    total_cap = sum(v[1] for v in METHODS.values())
+    thr = max(10, round(threshold * cap / total_cap))   # порог под выбранный набор методов
     score = int(max(-100, min(100, sum(p for p, _ in parts))))
     bull = sum(1 for p, _ in parts if p > 0)
     bear = sum(1 for p, _ in parts if p < 0)
     agree = max(bull, bear) / max(bull + bear, 1)
-    conf = int(min(95, abs(score) * 0.8 + agree * 20))
-    kind, signal = ("call", "CALL (покупка)") if score >= threshold else \
-                   ("put", "PUT (продажа)") if score <= -threshold else ("wait", "ЖДАТЬ")
-    w = in_blackout(blackout)
-    if w and kind != "wait":
-        kind, signal = "pause", f"ПАУЗА: новости {w} UTC"
+    conf = int(min(95, min(abs(score) / (cap * 0.7), 1) * 75 + agree * 20))
+    kind, signal = ("call", "CALL (покупка)") if score >= thr else \
+                   ("put", "PUT (продажа)") if score <= -thr else ("wait", "ЖДАТЬ")
+    if "news" in methods:
+        w = in_blackout(blackout)
+        if w and kind != "wait":
+            kind, signal = "pause", f"ПАУЗА: новости {w} UTC"
     return {"kind": kind, "signal": signal, "score": score, "conf": conf,
-            "parts": parts, "price": float(d["c"][-1])}
+            "parts": parts, "price": price, "thr": thr}
 
 
 # ───────── списки активов ─────────
@@ -290,5 +435,13 @@ GROUPS = {
         "USDCNH", "USDINR", "USDBRL", "EURTRY", "EURNOK", "EURSEK", "EURPLN"]),
     "Металлы и нефть": ["XAU/USD", "XAG/USD", "USOIL", "UKOIL"],
     "Крипто": _fx(["BTCUSD", "ETHUSD", "LTCUSD", "XRPUSD", "BNBUSD", "SOLUSD", "DOGEUSD", "ADAUSD"]),
+    "OTC Pocket Option": [
+        "EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "USDCHF_otc", "USDCAD_otc", "AUDUSD_otc",
+        "EURGBP_otc", "EURJPY_otc", "EURCHF_otc", "GBPJPY_otc", "GBPAUD_otc",
+        "AUDCAD_otc", "AUDCHF_otc", "AUDJPY_otc", "USDMXN_otc", "USDINR_otc",
+        "USDPHP_otc", "USDPKR_otc", "USDBRL_otc",
+        "BTCUSD_otc", "ETHUSD_otc", "XAUUSD_otc", "XAGUSD_otc", "UKBrent_otc", "USCrude_otc"],
 }
 FOREX_ALL = GROUPS["Форекс: основные"] + GROUPS["Форекс: кроссы"] + GROUPS["Форекс: экзотика"]
+
+OTC_ALL = GROUPS["OTC Pocket Option"]
