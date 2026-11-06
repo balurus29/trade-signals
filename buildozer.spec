@@ -4,11 +4,11 @@ package.name = tradesignals
 package.domain = org.example
 source.dir = .
 source.include_exts = py
-version = 0.1
-requirements = python3,kivy==2.3.0,numpy,certifi
+version = 0.2
+requirements = python3,kivy==2.3.0,numpy,certifi,plyer
 orientation = portrait
 fullscreen = 0
-android.permissions = INTERNET
+android.permissions = INTERNET,VIBRATE,POST_NOTIFICATIONS
 android.api = 33
 android.minapi = 24
 android.ndk = 25b
