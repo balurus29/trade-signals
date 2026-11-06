@@ -6,8 +6,9 @@ import time
 from kivy.animation import Animation
 from kivy.app import App
 from kivy.clock import Clock
-from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
+from kivy.graphics import Color, Ellipse, InstructionGroup, Line, Rectangle, RoundedRectangle
 from kivy.graphics.texture import Texture
+from kivy.core.window import Window
 from kivy.metrics import dp, sp
 from kivy.properties import BooleanProperty, ListProperty, NumericProperty, ObjectProperty, StringProperty
 from kivy.uix.behaviors import ButtonBehavior
@@ -16,8 +17,6 @@ from kivy.uix.label import Label
 from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.slider import Slider
-from kivy.uix.dropdown import DropDown
-from kivy.uix.spinner import Spinner, SpinnerOption
 from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
 
@@ -176,116 +175,76 @@ def payout_color(v):
     return "33f280" if v >= 90 else "00d9ff" if v >= 80 else "ffb833" if v >= 70 else "ff4d6b"
 
 
-class NeonOption(SpinnerOption):
-    """Строка выпадающего списка: тёмная плашка, цветная метка слева, выплата справа."""
+class NeonOption(ButtonBehavior, Label):
+    """Строка списка выбора: тёмная плашка, цветная метка слева, выплата справа."""
     selected = BooleanProperty(False)
 
-    def __init__(self, accent=CYAN, **kw):
-        super().__init__(**kw)
+    def __init__(self, value, accent=CYAN, **kw):
+        super().__init__(text=value, halign="left", valign="middle", font_size=sp(15), shorten=True,
+                         shorten_from="right", max_lines=1, size_hint_y=None, height=dp(50), **kw)
         self.accent = accent
-        self.background_normal = self.background_down = ""
-        self.background_color = (0, 0, 0, 0)
-        self.size_hint_y = None
-        self.height = dp(46)
-        self.halign = "left"
-        self.padding_x = dp(18)
-        self.valign = "middle"
-        self.bind(size=self._fit_text)
-        self.pay = Label(markup=True, font_size=sp(13), bold=True, halign="right", valign="middle",
-                         size_hint=(None, None), size=(dp(64), dp(46)))
-        self.add_widget(self.pay)
-        self.bind(pos=self._layout, size=self._layout, state=self._draw, selected=self._draw)
-        self.refresh()
-
-    def _fit_text(self, *_):
-        room = dp(80) if self.pay.text else dp(12)
-        self.text_size = (max(dp(20), self.width - room), None)
-
-    def refresh(self):
-        v = core.PAYOUTS.get(self.text)
+        self.pay = Label(markup=True, font_size=sp(14), bold=True, halign="right", valign="middle",
+                         size_hint=(None, None), size=(dp(64), dp(50)))
+        v = core.PAYOUTS.get(value)
         self.pay.text = f"[color={payout_color(v)}]{v}%[/color]" if v else ""
-        self._fit_text()
-
-    def _layout(self, *_):
-        self.pay.pos = (self.right - dp(74), self.y)
+        self.add_widget(self.pay)
+        self.bind(pos=self._draw, size=self._draw, state=self._draw, selected=self._draw)
         self._draw()
 
     def _draw(self, *_):
         a = self.accent
+        self.pay.pos = (self.right - dp(76), self.y)
+        self.text_size = (max(dp(20), self.width - dp(100 if self.pay.text else 36)), self.height)
+        self.padding = (dp(18), 0)
         self.canvas.before.clear()
         with self.canvas.before:
             Color(a[0], a[1], a[2], 0.38 if self.state == "down" else 0.22 if self.selected else 0.0)
             Rectangle(pos=self.pos, size=self.size)
-            Color(1, 1, 1, 0.05)
-            Rectangle(pos=self.pos, size=(self.width, self.height / 2))
             Color(a[0], a[1], a[2], 0.18)
             Line(points=[self.x + dp(10), self.y, self.right - dp(10), self.y], width=dp(1))
             if self.selected:
                 Color(a[0], a[1], a[2], 1)
-                Rectangle(pos=(self.x, self.y + dp(6)), size=(dp(4), self.height - dp(12)))
+                Rectangle(pos=(self.x, self.y + dp(8)), size=(dp(4), self.height - dp(16)))
         self.color = (1, 1, 1, 1) if self.selected or self.state == "down" else (0.86, 0.9, 1, 1)
         self.bold = self.selected
 
 
-class NeonDropDown(DropDown):
-    def __init__(self, accent=CYAN, **kw):
-        super().__init__(**kw)
-        self.accent = accent
-        self.max_height = dp(380)
-        self.bar_color = [accent[0], accent[1], accent[2], 0.9]
-        self.bind(pos=self._draw, size=self._draw)
-
-    def _draw(self, *_):
-        a = self.accent
-        self.canvas.before.clear()
-        with self.canvas.before:
-            for i in range(4, 0, -1):
-                e = i * dp(2.5)
-                Color(a[0], a[1], a[2], 0.04 * (5 - i))
-                RoundedRectangle(pos=(self.x - e, self.y - e), size=(self.width + 2 * e, self.height + 2 * e),
-                                 radius=[dp(12) + e])
-            Color(0.04, 0.05, 0.13, 0.98)
-            RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(12)])
-            Color(a[0], a[1], a[2], 0.9)
-            Line(rounded_rectangle=(self.x, self.y, self.width, self.height, dp(12)), width=dp(1.3))
-
-
-class NeonSpinner(Spinner):
-    """Выпадающий список в общем неоновом стиле: свечение, блик, стрелка, подсвеченный выбор."""
+class NeonSpinner(ButtonBehavior, Label):
+    """Поле выбора в неоновом стиле. По нажатию открывает окно со списком (как остальные окна приложения)."""
     glow = ListProperty([0.0, 0.85, 1.0, 1])
+    values = ListProperty([])
     right_text = StringProperty("")
+    title = StringProperty("Выбор")
 
     def __init__(self, glow=CYAN, **kw):
-        kw.setdefault("option_cls", NeonOption)
-        super().__init__(**kw)
+        kw.pop("drop_min", None)
+        super().__init__(bold=True, color=(1, 1, 1, 1), **kw)
         self.glow = list(glow)
-        self.background_normal = self.background_down = ""
-        self.background_color = (0, 0, 0, 0)
-        self.color = (1, 1, 1, 1)
-        self.bold = True
-        self.dropdown_cls = lambda **k: NeonDropDown(accent=self.glow, **k)
         self.tag = Label(markup=True, font_size=sp(13), bold=True, halign="right", valign="middle",
                          size_hint=(None, None), size=(dp(54), dp(30)))
         self.add_widget(self.tag)
         self.bind(pos=self._redraw, size=self._redraw, state=self._redraw, glow=self._redraw,
-                  right_text=self._tag_text)
-        self.bind(is_open=self._opened)
+                  right_text=lambda *_: setattr(self.tag, "text", self.right_text))
         self._redraw()
 
-    def _tag_text(self, *_):
-        self.tag.text = self.right_text
-
-    def _opened(self, _w, is_open):
-        if not is_open:
+    def on_release(self):
+        vals = list(self.values)
+        if not vals:
             return
-        try:
-            for o in self._dropdown.container.children:
-                o.accent = self.glow
-                o.selected = (o.text == self.text)
-                if hasattr(o, "refresh"):
-                    o.refresh()
-        except Exception:
-            pass
+        box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=0)
+        box.bind(minimum_height=box.setter("height"))
+        pop = Popup(title=self.title, size_hint=(0.92, None), background="",
+                    background_color=(0.04, 0.05, 0.12, 1), separator_color=self.glow)
+        for v in vals:
+            o = NeonOption(v, accent=self.glow)
+            o.selected = (v == self.text)
+            o.bind(on_release=lambda w, v=v: (setattr(self, "text", v), pop.dismiss()))
+            box.add_widget(o)
+        sv = ScrollView()
+        sv.add_widget(box)
+        pop.content = sv
+        pop.height = min(len(vals) * dp(50) + dp(60) + dp(16), Window.height * 0.8)
+        pop.open()
 
     def _redraw(self, *_):
         x, y = self.pos
@@ -366,15 +325,15 @@ class Root(BoxLayout):
 
         # ── пара ──
         row0 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
-        self.group = styled_spinner(glow=VIOLET, text="", values=[], size_hint_x=0.42)
-        self.pair = styled_spinner(glow=CYAN, text="", values=[])
+        self.group = styled_spinner(glow=VIOLET, title="Группа инструментов", text="", values=[], size_hint_x=0.42)
+        self.pair = styled_spinner(glow=CYAN, title="Пара (справа выплата)", text="", values=[])
         self.group.bind(text=self.on_group)
         self.pair.bind(text=lambda *_: (self.update_fav_btn(), self.update_payout()))
         row0.add_widget(self.group)
         row0.add_widget(self.pair)
 
         row1 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
-        self.interval = styled_spinner(glow=(1.0, 0.72, 0.2, 1), text=self.s["interval"], values=core.TF_LIST,
+        self.interval = styled_spinner(glow=(1.0, 0.72, 0.2, 1), title="Время свечи", text=self.s["interval"], values=core.TF_LIST,
                                        size_hint_x=0.22)
         self.fav_btn = GlowButton(text="В избранное", font=13, radius=dp(12), glow_color=[1.0, 0.72, 0.2, 1],
                                   glow_a=0.45, fill=[0.3, 0.2, 0.0, 0.9])
@@ -674,7 +633,7 @@ class Root(BoxLayout):
         field("payout", "Выплата брокера, %")
         field("steps", "Ступеней (1-12)")
         field("winrate", "Процент выигрышей, %")
-        self.mg_mode = styled_spinner(glow=COLORS["put"], text=mg["mode"], values=("Возместить убыток", "Множитель"),
+        self.mg_mode = styled_spinner(glow=COLORS["put"], title="Режим расчёта", text=mg["mode"], values=("Возместить убыток", "Множитель"),
                                       size_hint_y=None, height=dp(44))
         self.mg_mode.bind(text=lambda *_: self._mg_calc())
         box.add_widget(self.mg_mode)
