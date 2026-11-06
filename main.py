@@ -22,6 +22,7 @@ from kivy.uix.widget import Widget
 
 import alerts
 import journal
+import martingale
 import signals_core as core
 
 CYAN, VIOLET = (0.0, 0.85, 1.0, 1), (0.62, 0.36, 1.0, 1)
@@ -34,7 +35,8 @@ STATUS_RU = {"win": ("плюс", "33f280"), "loss": ("минус", "ff4d6b"), "d
 
 DEFAULTS = {"methods": list(core.ALL_METHODS), "weights": {}, "thr": 35, "blackout": "", "mtf": True,
             "vol": True, "session": True, "notify": True, "sound": True, "favs": [],
-            "group": "", "pair": "", "interval": "5m", "custom": ""}
+            "group": "", "pair": "", "interval": "5m", "custom": "",
+            "indicators": list(core.DEFAULT_INDICATORS), "mg": {}}
 
 
 def gradient_texture():
@@ -199,6 +201,8 @@ class Root(BoxLayout):
         self.dir = App.get_running_app().user_data_dir
         self.s = dict(DEFAULTS)
         self.s.update(self._read_json("settings.json", {}))
+        self.s["indicators"] = [k for k in self.s.get("indicators", []) if k in core.INDICATORS]
+        self.names = {**{k: v[0] for k, v in core.METHODS.items()}, **{k: v[0] for k, v in core.INDICATORS.items()}}
         self.entries = journal.load(os.path.join(self.dir, "journal.json"))
         self.last_sig = {}
         self.settling = set()
@@ -208,16 +212,17 @@ class Root(BoxLayout):
         self._restore_catalog()
 
         # ── заголовок ──
-        head = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(8))
-        self.j_btn = GlowButton(text="Журнал", font=13, radius=dp(12), size_hint_x=0.3,
-                                glow_color=[0.2, 0.95, 0.5, 1], glow_a=0.45, fill=[0.05, 0.2, 0.12, 0.9])
-        self.j_btn.bind(on_release=lambda *_: self.open_journal())
-        title = Label(text="[b]TRADE[/b] [color=00d9ff]SIGNALS[/color]", markup=True, font_size=sp(20))
-        self.set_btn = GlowButton(text="Настройки", font=13, radius=dp(12), size_hint_x=0.3,
-                                  glow_color=list(VIOLET), glow_a=0.45, fill=[0.2, 0.1, 0.36, 0.9])
-        self.set_btn.bind(on_release=lambda *_: self.open_settings())
-        for w in (self.j_btn, title, self.set_btn):
-            head.add_widget(w)
+        head = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
+
+        def hbtn(text, col, fill, cb):
+            btn = GlowButton(text=text, font=11, radius=dp(12), glow_color=list(col), glow_a=0.45, fill=fill)
+            btn.bind(on_release=lambda *_: cb())
+            head.add_widget(btn)
+            return btn
+        self.j_btn = hbtn("Журнал", COLORS["call"], [0.05, 0.2, 0.12, 0.9], self.open_journal)
+        hbtn("Индикаторы", CYAN, [0.0, 0.2, 0.26, 0.9], self.open_indicators)
+        hbtn("Мартингейл", COLORS["put"], [0.3, 0.05, 0.1, 0.9], self.open_martingale)
+        self.set_btn = hbtn("Настройки", VIOLET, [0.2, 0.1, 0.36, 0.9], self.open_settings)
 
         # ── пара ──
         row0 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
@@ -297,6 +302,7 @@ class Root(BoxLayout):
             self.add_widget(w)
 
         self._build_settings()
+        self._build_indicators()
         self.refresh_groups(initial=True)
         self.update_fav_btn()
         self.update_journal_btn()
@@ -417,6 +423,162 @@ class Root(BoxLayout):
         core.OTC_KEY = text.strip()
         self._write("otc_key.txt", text.strip())
 
+    # ───────── индикаторы и сочетания ─────────
+    def _build_indicators(self):
+        where_ru = {"тренд": "трендовый рынок", "боковик": "боковой рынок", "оба": "любой рынок"}
+        box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8), padding=dp(8))
+        box.bind(minimum_height=box.setter("height"))
+        self.advice = wrap_label("", 13, markup=True)
+        box.add_widget(self.advice)
+        box.add_widget(wrap_label("Готовые сочетания. Это общие правила технического анализа, на истории они "
+                                  "не проверены. Нажмите, чтобы применить:", 12, color=(1, 1, 1, 0.6)))
+        for p in core.PRESETS:
+            btn = GlowButton(text=p["name"], font=14, size_hint_y=None, height=dp(38), radius=dp(12),
+                             glow_color=list(VIOLET), glow_a=0.5, fill=[0.2, 0.1, 0.36, 0.9])
+            btn.bind(on_release=lambda _w, p=p: self.apply_preset(p))
+            box.add_widget(btn)
+            box.add_widget(wrap_label(", ".join(core.INDICATORS[k][0] for k in p["ind"]) + ". " + p["text"],
+                                      12, color=(1, 1, 1, 0.6)))
+        self.ind_btns = {}
+        cur = None
+        for key, (name, grp, _cap, _f, desc, where) in core.INDICATORS.items():
+            if grp != cur:
+                cur = grp
+                box.add_widget(wrap_label(f"[b]{grp}[/b]", 15, color=CYAN, markup=True))
+            r = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(8))
+            btn = GlowButton(text=name, font=13, toggle=True, dim=True, active=key in self.s["indicators"],
+                             radius=dp(12), size_hint_x=0.42, glow_color=list(CYAN), glow_a=0.5,
+                             fill=[0.0, 0.2, 0.26, 0.9])
+            btn.bind(active=lambda *_: self._on_ind_change())
+            lab = Label(text=f"{desc} Подходит: {where_ru[where]}.", font_size=sp(11), color=(1, 1, 1, 0.65),
+                        halign="left", valign="middle")
+            lab.bind(size=lambda w, v: setattr(w, "text_size", v))
+            r.add_widget(btn)
+            r.add_widget(lab)
+            box.add_widget(r)
+            self.ind_btns[key] = btn
+        sv = ScrollView()
+        sv.add_widget(box)
+        self.ind_popup = Popup(title="Индикаторы и сочетания", content=sv, size_hint=(0.96, 0.92), background="",
+                               background_color=(0.04, 0.05, 0.12, 1), separator_color=CYAN)
+        self.ind_popup.bind(on_dismiss=lambda *_: self.save_settings())
+        self._on_ind_change()
+
+    def open_indicators(self):
+        self.ind_popup.open()
+
+    def _on_ind_change(self):
+        self.s["indicators"] = [k for k, b in self.ind_btns.items() if b.active]
+        colors = {"ok": "33f280", "warn": "ffb833", "tip": "00d9ff"}
+        lines = [f"[color={colors[k]}]{t}[/color]" for k, t in core.advise(self.s["indicators"])]
+        self.advice.text = f"[b]Выбрано индикаторов: {len(self.s['indicators'])}[/b]\n" + "\n".join(lines)
+
+    def apply_preset(self, p):
+        for k, btn in self.ind_btns.items():
+            btn.active = k in p["ind"]
+        for k, btn in self.chips.items():
+            if k != "news":
+                btn.active = k in p["methods"]
+        self._on_ind_change()
+        self.advice.text = f"[b]Применён набор «{p['name']}»[/b]\n" + self.advice.text
+        self.save_settings()
+
+    # ───────── калькулятор мартингейла ─────────
+    def open_martingale(self):
+        mg = {"deposit": "1000", "first": "10", "payout": "85", "steps": "5", "mult": "2.2", "winrate": "",
+              "mode": "Возместить убыток"}
+        mg.update(self.s.get("mg", {}))
+        st = journal.stats(self.entries)
+        if not mg["winrate"]:
+            mg["winrate"] = f"{st['rate']:.0f}" if st["n"] >= 20 else "55"
+        box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8), padding=dp(8))
+        box.bind(minimum_height=box.setter("height"))
+        self.mg_in = {}
+
+        def field(key, label):
+            r = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+            lab = Label(text=label, font_size=sp(13), size_hint_x=0.58, halign="left", valign="middle")
+            lab.bind(size=lambda w, v: setattr(w, "text_size", v))
+            ti = styled_input(text=str(mg[key]))
+            ti.bind(text=lambda *_: self._mg_calc())
+            r.add_widget(lab)
+            r.add_widget(ti)
+            box.add_widget(r)
+            self.mg_in[key] = ti
+        field("deposit", "Депозит")
+        field("first", "Первая ставка")
+        field("payout", "Выплата брокера, %")
+        field("steps", "Ступеней (1-12)")
+        field("winrate", "Процент выигрышей, %")
+        self.mg_mode = styled_spinner(text=mg["mode"], values=("Возместить убыток", "Множитель"),
+                                      size_hint_y=None, height=dp(44))
+        self.mg_mode.bind(text=lambda *_: self._mg_calc())
+        box.add_widget(self.mg_mode)
+        field("mult", "Множитель (режим «Множитель»)")
+        box.add_widget(wrap_label("«Возместить убыток»: каждая ставка рассчитывается так, чтобы выигрыш покрыл все "
+                                  "прошлые потери и принёс прибыль первой ставки. «Множитель»: ставка умножается "
+                                  "на заданное число.", 12, color=(1, 1, 1, 0.55)))
+        self.mg_out = wrap_label("", 13, markup=True)
+        box.add_widget(self.mg_out)
+        sv = ScrollView()
+        sv.add_widget(box)
+        pop = Popup(title="Калькулятор мартингейла", content=sv, size_hint=(0.96, 0.92), background="",
+                    background_color=(0.04, 0.05, 0.12, 1), separator_color=COLORS["put"])
+        pop.bind(on_dismiss=lambda *_: self._mg_save())
+        self._mg_calc()
+        pop.open()
+
+    def _mg_save(self):
+        d = {k: ti.text for k, ti in self.mg_in.items()}
+        d["mode"] = self.mg_mode.text
+        self.s["mg"] = d
+        self.save_settings()
+
+    def _mg_calc(self, *_):
+        def num(k):
+            try:
+                return float(self.mg_in[k].text.replace(",", ".").replace(" ", ""))
+            except Exception:
+                return None
+        dep, first, pay, steps, wr, mult = (num(k) for k in ("deposit", "first", "payout", "steps", "winrate", "mult"))
+        mode = "mult" if self.mg_mode.text.startswith("Множ") else "recover"
+        if None in (dep, first, pay, steps, wr) or (mode == "mult" and mult is None):
+            self.mg_out.text = "Заполните все поля числами."
+            return
+        if not (dep > 0 and first > 0 and 1 <= pay <= 300 and 1 <= steps <= 12 and 1 <= wr <= 99
+                and (mode != "mult" or mult > 1)):
+            self.mg_out.text = ("Проверьте значения: ставка и депозит больше нуля, выплата 1-300%, "
+                                "ступеней от 1 до 12, процент выигрышей 1-99%, множитель больше 1.")
+            return
+        steps = int(steps)
+        pr = pay / 100
+        p = martingale.plan(dep, first, pr, steps, mode, mult or 2.2, wr / 100)
+        q = 1 - wr / 100
+        wait = (1 - q ** steps) / ((1 - q) * q ** steps)
+        ev_col = "33f280" if p["ev"] > 0 else "ff4d6b"
+        lines = [
+            f"Безубыточность при выплате {pay:.0f}%: [b]{p['breakeven'] * 100:.1f}%[/b] выигрышей. "
+            + ("Ваш процент выше." if wr / 100 > p["breakeven"] else "[color=ff4d6b]Ваш процент ниже: ставки убыточны в среднем.[/color]"),
+            f"Средний результат одной серии при {wr:.0f}% выигрышей: [color={ev_col}]{p['ev']:+.2f}[/color].",
+            f"Шанс проиграть все {steps} ступеней подряд: [b]{p['p_bust'] * 100:.2f}%[/b]. Потеря: "
+            f"[color=ff4d6b]{p['series_loss']:.2f}[/color] ({100 * p['series_loss'] / dep:.0f}% депозита).",
+            f"Такая серия из {steps} проигрышей в среднем случается примерно раз в {wait:.0f} сделок.",
+            ("Депозита хватает на все ступени." if p["affordable"] == steps else
+             f"[color=ff4d6b]Депозита хватает только на {p['affordable']} из {steps} ступеней.[/color]"),
+            f"Первая ставка, при которой депозит выдержит {steps} проигрышей подряд: не больше "
+            f"[b]{martingale.max_first_stake(dep, pr, steps, mode, mult or 2.2):.2f}[/b].",
+            "",
+            "[b]Ступени:[/b] ставка | всего вложено | чистая прибыль при победе | шанс дойти",
+        ]
+        for r in p["rows"]:
+            row = f"{r['k']}. {r['stake']:.2f} | {r['total']:.2f} | {r['profit']:+.2f} | {r['p_reach'] * 100:.1f}%"
+            lines.append(row if r["afford"] else f"[color=ff4d6b]{row}  (не хватает депозита)[/color]")
+        lines += ["", "[color=99aad9]Мартингейл не создаёт преимущества: ожидаемый результат определяют только "
+                  "процент выигрышей и выплата, а система ставок лишь делает потери редкими, но крупными. "
+                  "Расчёт предполагает независимые сделки с постоянным процентом выигрышей, на практике это не так. "
+                  "Это арифметика, а не финансовая рекомендация.[/color]"]
+        self.mg_out.text = "\n".join(lines)
+
     # ───────── каталог OTC ─────────
     def _restore_catalog(self):
         syms = self._read_json("otc_catalog.json", None)
@@ -534,7 +696,7 @@ class Root(BoxLayout):
         s = self.s
         bl = [x for x in s["blackout"].split(",") if x.strip()]
         opts = {"mtf": s["mtf"], "vol": s["vol"], "session": s["session"]}
-        return self.interval.text, s["thr"], bl, set(s["methods"]), s["weights"], opts
+        return self.interval.text, s["thr"], bl, set(s["methods"]), s["weights"], opts, list(s["indicators"])
 
     def run(self):
         sym = self.current_symbol()
@@ -562,33 +724,33 @@ class Root(BoxLayout):
         self._busy = True
         self.btn.disabled = self.scan_btn.disabled = True
         self.style_signal("wait", "Загрузка...")
-        itv, thr, bl, methods, weights, opts = self.params()
-        threading.Thread(target=self._work, args=(pairs, itv, thr, bl, methods, weights, opts, notify),
+        itv, thr, bl, methods, weights, opts, inds = self.params()
+        threading.Thread(target=self._work, args=(pairs, itv, thr, bl, methods, weights, opts, inds, notify),
                          daemon=True).start()
 
-    def _work(self, pairs, itv, thr, bl, methods, weights, opts, notify):
+    def _work(self, pairs, itv, thr, bl, methods, weights, opts, inds, notify):
         results = []
         for i, sym in enumerate(pairs, 1):
             if len(pairs) > 1:
                 Clock.schedule_once(lambda dt, i=i, s=sym: self.style_signal(
                     "wait", f"Анализ {i}/{len(pairs)}: {s}"))
             try:
-                res = core.analyze_symbol(sym, itv, thr, bl, methods, weights, opts)
+                res = core.analyze_symbol(sym, itv, thr, bl, methods, weights, opts, inds)
                 results.append((sym, res, None if res else "Недостаточно свечей для анализа"))
             except Exception as e:
                 msg = str(e)
                 results.append((sym, None, msg))
                 if "ключ" in msg or "квота" in msg:
                     break
-        Clock.schedule_once(lambda dt: self._done(pairs, itv, results, notify, methods))
+        Clock.schedule_once(lambda dt: self._done(pairs, itv, results, notify, methods, inds))
 
-    def _done(self, pairs, itv, results, notify, methods):
+    def _done(self, pairs, itv, results, notify, methods, inds):
         self._busy = False
         self.btn.disabled = self.scan_btn.disabled = False
         now = time.time()
         for sym, res, _err in results:
             if res and res["kind"] in ("call", "put"):
-                self._register(sym, itv, res, methods, notify, now)
+                self._register(sym, itv, res, methods, notify, now, inds)
             else:
                 self.last_sig.pop(sym, None)
         if len(pairs) == 1:
@@ -597,10 +759,10 @@ class Root(BoxLayout):
         else:
             self.show_list(itv, results)
 
-    def _register(self, sym, itv, res, methods, notify, now):
+    def _register(self, sym, itv, res, methods, notify, now, inds):
         if not journal.is_new(self.last_sig, sym, res["kind"], now, res["exp_min"]):
             return
-        self.entries.append(journal.new_entry(sym, itv, res, methods, now))
+        self.entries.append(journal.new_entry(sym, itv, res, methods, now, inds if 'tech' in methods else []))
         journal.save(os.path.join(self.dir, "journal.json"), self.entries)
         self.update_journal_btn()
         if notify and self.s["notify"]:
@@ -694,7 +856,7 @@ class Root(BoxLayout):
         self.j_btn.text = f"Журнал {st['rate']:.0f}%" if st["rate"] is not None else "Журнал"
 
     def open_journal(self):
-        st = journal.stats(self.entries)
+        st = journal.stats(self.entries, self.names)
         box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8), padding=dp(8))
         box.bind(minimum_height=box.setter("height"))
         rate = f"{st['rate']:.1f}%" if st["rate"] is not None else "нет данных"
@@ -708,7 +870,7 @@ class Root(BoxLayout):
         box.add_widget(wrap_label("По направлению: " + ", ".join(parts), 13))
         good = [(k, v) for k, v in st["by_methods"].items() if v[1] >= 3]
         if good:
-            box.add_widget(wrap_label("По наборам методов (от 3 сделок):\n" + "\n".join(
+            box.add_widget(wrap_label("По наборам методов и индикаторов (от 3 сделок):\n" + "\n".join(
                 f"{k}: {v[0]}/{v[1]} ({100 * v[0] / v[1]:.0f}%)" for k, v in good), 13))
         box.add_widget(wrap_label("Цена на момент экспирации берётся у источника котировок и может слегка "
                                   "отличаться от брокера. Это приблизительная статистика, а не результат реальных сделок.",

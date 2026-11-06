@@ -234,40 +234,221 @@ def pivots(d, n=3):
 
 
 # ───────── компоненты сигнала (баллы: + это CALL, - это PUT) ─────────
-def trend_and_momentum(d):
+def _sma(x, m):
+    out = np.full(len(x), np.nan)
+    for i in range(m - 1, len(x)):
+        w = x[i - m + 1:i + 1]
+        if not np.isnan(w).any():
+            out[i] = w.mean()
+    return out
+
+
+def ind_ema(d, hi, lo):
     c = d["c"]
     e20, e50 = ema(c, 20), ema(c, 50)
-    out = []
     slope = e50[-1] - e50[-6]
     if c[-1] > e20[-1] > e50[-1] and slope > 0:
-        out.append((25, "Тренд восходящий (цена > EMA20 > EMA50)"))
-    elif c[-1] < e20[-1] < e50[-1] and slope < 0:
-        out.append((-25, "Тренд нисходящий (цена < EMA20 < EMA50)"))
-    elif c[-1] > e50[-1]:
-        out.append((8, "Цена выше EMA50, тренд слабо восходящий"))
-    else:
-        out.append((-8, "Цена ниже EMA50, тренд слабо нисходящий"))
+        return [(25, "EMA: тренд восходящий (цена > EMA20 > EMA50)")]
+    if c[-1] < e20[-1] < e50[-1] and slope < 0:
+        return [(-25, "EMA: тренд нисходящий (цена < EMA20 < EMA50)")]
+    if c[-1] > e50[-1]:
+        return [(8, "EMA: цена выше EMA50, тренд слабо восходящий")]
+    return [(-8, "EMA: цена ниже EMA50, тренд слабо нисходящий")]
 
-    r = rsi(c)
+
+def ind_ema_cross(d, hi, lo):
+    c = d["c"]
+    e9, e21 = ema(c, 9), ema(c, 21)
+    if e9[-1] > e21[-1]:
+        if any(e9[-k] <= e21[-k] for k in (2, 3)):
+            return [(12, "EMA 9/21: свежее пересечение вверх")]
+        return [(5, "EMA 9 выше EMA 21")]
+    if any(e9[-k] >= e21[-k] for k in (2, 3)):
+        return [(-12, "EMA 9/21: свежее пересечение вниз")]
+    return [(-5, "EMA 9 ниже EMA 21")]
+
+
+def ind_rsi(d, hi, lo):
+    r = rsi(d["c"])
     if r < 30:
-        out.append((10, f"RSI {r:.0f}: перепроданность"))
-    elif r > 70:
-        out.append((-10, f"RSI {r:.0f}: перекупленность"))
+        return [(10, f"RSI {r:.0f}: перепроданность")]
+    if r > 70:
+        return [(-10, f"RSI {r:.0f}: перекупленность")]
+    return []
 
+
+def ind_macd(d, hi, lo):
+    c = d["c"]
     macd = ema(c, 12) - ema(c, 26)
     hist = macd - ema(macd, 9)
     if hist[-1] > 0 and hist[-1] > hist[-2]:
-        out.append((10, "MACD: бычий импульс растёт"))
-    elif hist[-1] < 0 and hist[-1] < hist[-2]:
-        out.append((-10, "MACD: медвежий импульс растёт"))
+        return [(10, "MACD: бычий импульс растёт")]
+    if hist[-1] < 0 and hist[-1] < hist[-2]:
+        return [(-10, "MACD: медвежий импульс растёт")]
+    return []
 
+
+def ind_boll(d, hi, lo):
+    c = d["c"]
     w = c[-20:]
     ma, sd = w.mean(), w.std(ddof=1)
     if c[-1] < ma - 2 * sd:
-        out.append((8, "Цена ниже нижней полосы Боллинджера"))
-    elif c[-1] > ma + 2 * sd:
-        out.append((-8, "Цена выше верхней полосы Боллинджера"))
-    return out
+        return [(8, "Боллинджер: цена ниже нижней полосы")]
+    if c[-1] > ma + 2 * sd:
+        return [(-8, "Боллинджер: цена выше верхней полосы")]
+    return []
+
+
+def ind_stoch(d, hi, lo):
+    h, l, c = d["h"], d["l"], d["c"]
+    n = len(c)
+    raw = np.full(n, np.nan)
+    for i in range(13, n):
+        hh, ll = h[i - 13:i + 1].max(), l[i - 13:i + 1].min()
+        raw[i] = 100 * (c[i] - ll) / (hh - ll) if hh > ll else 50.0
+    k = _sma(raw, 3)
+    dd = _sma(k, 3)
+    cross_up = any(k[-j] > dd[-j] and k[-j - 1] <= dd[-j - 1] for j in (1, 2))
+    cross_dn = any(k[-j] < dd[-j] and k[-j - 1] >= dd[-j - 1] for j in (1, 2))
+    if k[-1] < 25 and cross_up:
+        return [(10, f"Стохастик {k[-1]:.0f}: разворот вверх из перепроданности")]
+    if k[-1] > 75 and cross_dn:
+        return [(-10, f"Стохастик {k[-1]:.0f}: разворот вниз из перекупленности")]
+    return []
+
+
+def ind_cci(d, hi, lo):
+    tp = (d["h"] + d["l"] + d["c"]) / 3
+    ma = _sma(tp, 20)
+    cci = np.full(len(tp), np.nan)
+    for i in range(19, len(tp)):
+        md = np.abs(tp[i - 19:i + 1] - ma[i]).mean()
+        cci[i] = (tp[i] - ma[i]) / (0.015 * md) if md > 0 else 0.0
+    if cci[-2] < -100 <= cci[-1]:
+        return [(8, f"CCI {cci[-1]:.0f}: выход из зоны перепроданности")]
+    if cci[-2] > 100 >= cci[-1]:
+        return [(-8, f"CCI {cci[-1]:.0f}: выход из зоны перекупленности")]
+    return []
+
+
+def ind_adx(d, hi, lo, n=14):
+    h, l, c = d["h"], d["l"], d["c"]
+    up, dn = h[1:] - h[:-1], l[:-1] - l[1:]
+    plus = np.where((up > dn) & (up > 0), up, 0.0)
+    minus = np.where((dn > up) & (dn > 0), dn, 0.0)
+    pc = c[:-1]
+    tr = np.maximum.reduce([h[1:] - l[1:], np.abs(h[1:] - pc), np.abs(l[1:] - pc)])
+    a = ewm(tr, 1 / n)
+    a = np.where(a == 0, np.nan, a)
+    pdi, mdi = 100 * ewm(plus, 1 / n) / a, 100 * ewm(minus, 1 / n) / a
+    s = pdi + mdi
+    dx = np.where(s == 0, 0.0, 100 * np.abs(pdi - mdi) / np.where(s == 0, 1, s))
+    adx = ewm(np.nan_to_num(dx), 1 / n)[-1]
+    if adx >= 25:
+        if pdi[-1] > mdi[-1]:
+            return [(12, f"ADX {adx:.0f}: сильный восходящий тренд")]
+        return [(-12, f"ADX {adx:.0f}: сильный нисходящий тренд")]
+    if adx < 20:
+        return [(0, f"ADX {adx:.0f}: рынок без тренда, трендовым сигналам доверять меньше")]
+    return []
+
+
+def _psar(d, af0=0.02, afmax=0.2):
+    h, l = d["h"], d["l"]
+    n = len(h)
+    up, ep, af = True, h[0], af0
+    sar = l[0]
+    trend = np.ones(n, dtype=bool)
+    for i in range(1, n):
+        s = sar + af * (ep - sar)
+        if up:
+            s = min(s, l[i - 1], l[i - 2] if i > 1 else l[i - 1])
+            if l[i] < s:
+                up, s, ep, af = False, ep, l[i], af0
+            elif h[i] > ep:
+                ep, af = h[i], min(af + af0, afmax)
+        else:
+            s = max(s, h[i - 1], h[i - 2] if i > 1 else h[i - 1])
+            if h[i] > s:
+                up, s, ep, af = True, ep, h[i], af0
+            elif l[i] < ep:
+                ep, af = l[i], min(af + af0, afmax)
+        sar, trend[i] = s, up
+    return trend
+
+
+def ind_psar(d, hi, lo):
+    t = _psar(d)
+    if t[-1] != t[-2] or t[-2] != t[-3]:
+        return [(10, "Parabolic SAR развернулся вверх")] if t[-1] else [(-10, "Parabolic SAR развернулся вниз")]
+    return [(4, "Parabolic SAR под ценой (рост)")] if t[-1] else [(-4, "Parabolic SAR над ценой (падение)")]
+
+
+def ind_supertrend(d, hi, lo, n=10, mult=3.0):
+    h, l, c = d["h"], d["l"], d["c"]
+    a = atr_series(d, n)
+    hl2 = (h + l) / 2
+    ub, lb = hl2 + mult * a, hl2 - mult * a
+    fub, flb = ub.copy(), lb.copy()
+    dirn = np.ones(len(c))
+    for i in range(1, len(c)):
+        fub[i] = ub[i] if ub[i] < fub[i - 1] or c[i - 1] > fub[i - 1] else fub[i - 1]
+        flb[i] = lb[i] if lb[i] > flb[i - 1] or c[i - 1] < flb[i - 1] else flb[i - 1]
+        if dirn[i - 1] == 1:
+            dirn[i] = -1 if c[i] < flb[i] else 1
+        else:
+            dirn[i] = 1 if c[i] > fub[i] else -1
+    if dirn[-1] != dirn[-2] or dirn[-2] != dirn[-3]:
+        return [(15, "Supertrend: разворот вверх")] if dirn[-1] == 1 else [(-15, "Supertrend: разворот вниз")]
+    return [(8, "Supertrend: восходящий")] if dirn[-1] == 1 else [(-8, "Supertrend: нисходящий")]
+
+
+def ind_ichimoku(d, hi, lo):
+    h, l, c = d["h"], d["l"], d["c"]
+    n = len(c)
+    if n < 80:
+        return []
+    mid = lambda a, b: (h[a:b].max() + l[a:b].min()) / 2
+    tenkan, kijun = mid(n - 9, n), mid(n - 26, n)
+    i = n - 26                                     # облако сдвинуто на 26 свечей вперёд
+    span_a = (mid(i - 8, i + 1) + mid(i - 25, i + 1)) / 2
+    span_b = mid(i - 51, i + 1)
+    top, bot = max(span_a, span_b), min(span_a, span_b)
+    if c[-1] > top:
+        return [(15, "Ichimoku: цена выше облака, Tenkan выше Kijun")] if tenkan > kijun else [(6, "Ichimoku: цена выше облака")]
+    if c[-1] < bot:
+        return [(-15, "Ichimoku: цена ниже облака, Tenkan ниже Kijun")] if tenkan < kijun else [(-6, "Ichimoku: цена ниже облака")]
+    return [(0, "Ichimoku: цена внутри облака, направления нет")]
+
+
+def ind_donchian(d, hi, lo):
+    h, l, c = d["h"], d["l"], d["c"]
+    if c[-1] > h[-21:-1].max():
+        return [(10, "Дончиан: пробой максимума 20 свечей")]
+    if c[-1] < l[-21:-1].min():
+        return [(-10, "Дончиан: пробой минимума 20 свечей")]
+    return []
+
+
+def ind_fib(d, hi, lo):
+    if not hi or not lo:
+        return []
+    h, l, c = d["h"], d["l"], d["c"]
+    n, a = len(c), atr(d)
+    ih, il = hi[-1], lo[-1]
+    if il < ih and n - 1 - ih <= 60:               # было движение вверх, идёт откат
+        rng = h[ih] - l[il]
+        if rng >= 2 * a and l[il] < c[-1] < h[ih]:
+            for r in (0.382, 0.5, 0.618):
+                if abs(c[-1] - (h[ih] - r * rng)) <= 0.3 * a:
+                    return [(10, f"Фибоначчи: откат к {r * 100:.1f}% после роста")]
+    elif ih < il and n - 1 - il <= 60:             # было движение вниз, идёт отскок
+        rng = h[ih] - l[il]
+        if rng >= 2 * a and l[il] < c[-1] < h[ih]:
+            for r in (0.382, 0.5, 0.618):
+                if abs(c[-1] - (l[il] + r * rng)) <= 0.3 * a:
+                    return [(-10, f"Фибоначчи: отскок к {r * 100:.1f}% после падения")]
+    return []
 
 
 def support_resistance(d, hi, lo):
@@ -497,6 +678,74 @@ def volume_confirm(d):
     return []
 
 
+# ключ: (название, группа, макс. баллов, функция(d, hi, lo), описание, где работает)
+INDICATORS = {
+    "ema": ("EMA 20/50", "Тренд", 25, ind_ema, "Две скользящие: направление и сила тренда.", "тренд"),
+    "ema_cross": ("EMA 9/21", "Тренд", 12, ind_ema_cross, "Быстрое пересечение средних: ранний сигнал смены движения.", "тренд"),
+    "adx": ("ADX/DI", "Тренд", 12, ind_adx, "Показывает, есть ли тренд вообще и в какую сторону.", "оба"),
+    "psar": ("Parabolic SAR", "Тренд", 10, ind_psar, "Точки под/над ценой, разворот точек даёт сигнал.", "тренд"),
+    "supertrend": ("Supertrend", "Тренд", 15, ind_supertrend, "Линия на основе ATR, чёткие развороты тренда.", "тренд"),
+    "ichimoku": ("Ichimoku", "Тренд", 15, ind_ichimoku, "Облако, Tenkan и Kijun: тренд и зоны поддержки.", "тренд"),
+    "rsi": ("RSI 14", "Импульс", 10, ind_rsi, "Перекупленность и перепроданность.", "боковик"),
+    "stoch": ("Стохастик", "Импульс", 10, ind_stoch, "Разворот осциллятора в крайних зонах.", "боковик"),
+    "cci": ("CCI 20", "Импульс", 8, ind_cci, "Выход из зон перекупленности и перепроданности.", "боковик"),
+    "macd": ("MACD", "Импульс", 10, ind_macd, "Рост или спад импульса движения.", "тренд"),
+    "diverg": ("Дивергенции", "Импульс", 20, divergences, "Цена и RSI/MACD расходятся: возможный разворот.", "оба"),
+    "boll": ("Боллинджер", "Волатильность", 8, ind_boll, "Выход цены за границы нормального диапазона.", "боковик"),
+    "donchian": ("Дончиан 20", "Волатильность", 10, ind_donchian, "Пробой максимума или минимума 20 свечей.", "тренд"),
+    "fib": ("Фибоначчи", "Уровни", 10, ind_fib, "Откат к 38,2/50/61,8% последнего движения.", "тренд"),
+    "volume": ("Объём", "Объём", 8, lambda d, hi, lo: volume_confirm(d), "Всплеск объёма подтверждает свечу (есть не у всех активов).", "оба"),
+}
+DEFAULT_INDICATORS = ["ema", "rsi", "macd", "boll", "diverg", "volume"]
+
+# готовые сочетания: общие правила технического анализа, на истории НЕ проверены
+PRESETS = [
+    {"name": "Тренд + импульс", "ind": ["ema", "macd", "rsi"], "methods": ["tech"],
+     "text": "Тренд задаёт направление, RSI и MACD подсказывают момент входа. Классика для трендового рынка."},
+    {"name": "Сильный тренд", "ind": ["ema", "adx", "supertrend"], "methods": ["tech", "breakout"],
+     "text": "ADX фильтрует боковик, Supertrend и EMA ведут по тренду. Хуже работает на боковом рынке."},
+    {"name": "Боковик и отскоки", "ind": ["boll", "stoch", "rsi"], "methods": ["tech", "levels", "candles"],
+     "text": "Ловит отскоки от границ диапазона вместе с уровнями и свечами. В сильном тренде даёт много ложных."},
+    {"name": "Откат по тренду", "ind": ["ema", "fib", "stoch"], "methods": ["tech", "levels", "candles"],
+     "text": "Вход в сторону тренда после отката к уровню Фибоначчи и развороту осциллятора."},
+    {"name": "Пробой", "ind": ["donchian", "adx", "volume"], "methods": ["tech", "breakout"],
+     "text": "Пробой диапазона при подтверждении силы тренда. Ложные пробои отсеивает метод «Пробой»."},
+    {"name": "Разворот", "ind": ["diverg", "rsi", "stoch"], "methods": ["tech", "levels", "candles", "patterns"],
+     "text": "Дивергенции, перекупленность и разворотные свечи и фигуры у сильных уровней. Редкие, но осторожные сигналы."},
+    {"name": "Ichimoku-набор", "ind": ["ichimoku", "macd", "adx"], "methods": ["tech"],
+     "text": "Облако показывает тренд и зоны, MACD и ADX подтверждают его силу."},
+]
+
+
+def advise(selected):
+    """Подсказки по выбранным индикаторам: [(kind, text)], kind = ok / warn / tip."""
+    sel = [k for k in selected if k in INDICATORS]
+    if not sel:
+        return [("warn", "Не выбрано ни одного индикатора: метод «Технический» ничего не даст.")]
+    groups = {}
+    for k in sel:
+        groups.setdefault(INDICATORS[k][1], []).append(INDICATORS[k][0])
+    out = []
+    trend, mom = groups.get("Тренд", []), groups.get("Импульс", [])
+    if not trend:
+        out.append(("warn", "Нет индикатора тренда: сигналы могут идти против общего движения."))
+    if len(mom) >= 3:
+        out.append(("warn", f"Осцилляторы ({', '.join(mom)}) считаются по похожим данным и дублируют друг друга: это не независимые подтверждения."))
+    if len(trend) >= 4:
+        out.append(("warn", f"Трендовых индикаторов много ({len(trend)}), они почти всегда совпадают и не добавляют информации."))
+    if trend and mom and "adx" not in sel:
+        out.append(("tip", "Совет: на боковом рынке трендовые индикаторы и осцилляторы противоречат друг другу. ADX покажет, есть ли тренд."))
+    if "volume" in sel:
+        out.append(("warn", "Объём есть не у всех активов: у Форекс и OTC его нет, проверка будет пропущена."))
+    if len(sel) > 8:
+        out.append(("warn", "Индикаторов много: растёт шанс случайных совпадений. Обычно хватает 3-5 из разных групп."))
+    if trend and mom and (groups.get("Волатильность") or "adx" in sel) and len(sel) <= 8 and not any(k == "warn" for k, _ in out):
+        out.append(("ok", "Хорошая структура: есть тренд, импульс и фильтр рынка (волатильность или ADX)."))
+    if not out:
+        out.append(("ok", "Замечаний нет."))
+    return out
+
+
 def chart_data(d, hi, lo, n=60):
     L = len(d["c"])
     s = max(0, L - n)
@@ -507,50 +756,72 @@ def chart_data(d, hi, lo, n=60):
             "lp": [(i - s, float(d["l"][i])) for i in lo if i >= s]}
 
 
-def analyze(d, threshold=35, blackout=None, methods=None, weights=None):
-    """methods: набор ключей из METHODS (None = все); weights: множители методов (по умолчанию 1).
+def analyze(d, threshold=35, blackout=None, methods=None, weights=None, indicators=None):
+    """methods: набор ключей из METHODS (None = все); weights: множители методов;
+    indicators: ключи из INDICATORS для метода «Технический» (None = набор по умолчанию).
     Возвращает dict: kind (call/put/wait/pause), signal, score, conf, parts, price, thr, chart."""
     methods = set(methods) if methods is not None else set(ALL_METHODS)
     weights = weights or {}
+    ind_keys = [k for k in (indicators if indicators is not None else DEFAULT_INDICATORS) if k in INDICATORS]
     if len(d["c"]) < 80:
         return None
     price = float(d["c"][-1])
     directional = {m for m in methods & {"tech", "levels", "candles", "patterns", "breakout"}
                    if weights.get(m, 1.0) > 0}
+    if "tech" in directional and not ind_keys:
+        directional.discard("tech")
     if not directional:
-        msg = ("Фундаментал сам направление не даёт: он только блокирует сигналы в окна новостей. "
-               "Добавьте ещё один метод." if "news" in methods else "Выберите хотя бы один метод анализа.")
+        if "news" in methods and not methods & {"tech", "levels", "candles", "patterns", "breakout"}:
+            msg = "Фундаментал сам направление не даёт: он только блокирует сигналы в окна новостей. Добавьте ещё один метод."
+        elif "tech" in methods and not ind_keys:
+            msg = "Для метода «Технический» не выбрано ни одного индикатора."
+        else:
+            msg = "Выберите хотя бы один метод анализа."
         return {"kind": "wait", "signal": "ВЫБЕРИТЕ МЕТОД", "score": 0, "conf": 0,
                 "parts": [(0, msg)], "price": price, "thr": 0, "chart": None}
     d = {k: v[-150:] for k, v in d.items()}
     hi, lo = pivots(d)
-    parts = []
+    parts, other_sum, tech_sum = [], 0, 0
 
     def add(key, items):
         w = weights.get(key, 1.0)
-        parts.extend((p if w == 1.0 else int(round(p * w)), t) for p, t in items)
+        items = [(p if w == 1.0 else int(round(p * w)), t) for p, t in items]
+        parts.extend(items)
+        return sum(p for p, _ in items)
 
     if "tech" in directional:
-        add("tech", trend_and_momentum(d) + divergences(d, hi, lo) + volume_confirm(d))
+        items = []
+        for k in ind_keys:
+            items += INDICATORS[k][3](d, hi, lo)
+        lim = 65 * max(1.0, weights.get("tech", 1.0))
+        tech_sum = max(-lim, min(lim, add("tech", items)))      # много индикаторов не заглушают остальные методы
     if "levels" in directional:
-        add("levels", support_resistance(d, hi, lo))
+        other_sum += add("levels", support_resistance(d, hi, lo))
     if "breakout" in directional:
-        add("breakout", breakouts(d, hi, lo))
+        other_sum += add("breakout", breakouts(d, hi, lo))
     if "candles" in directional:
-        add("candles", candle_patterns(d))
+        other_sum += add("candles", candle_patterns(d))
     if "patterns" in directional:
-        add("patterns", chart_patterns(d, hi, lo))
+        other_sum += add("patterns", chart_patterns(d, hi, lo))
 
-    cap = sum(METHODS[m][1] * weights.get(m, 1.0) for m in directional)
+    caps = {m: METHODS[m][1] for m in directional}
+    if "tech" in directional:
+        caps["tech"] = min(65, sum(INDICATORS[k][2] for k in ind_keys))
+    cap = sum(caps[m] * weights.get(m, 1.0) for m in directional)
     total_cap = sum(v[1] for v in METHODS.values())
     thr = max(10, round(threshold * cap / total_cap))
-    score = int(max(-100, min(100, sum(p for p, _ in parts))))
+    score = int(max(-100, min(100, other_sum + tech_sum)))
     bull = sum(1 for p, _ in parts if p > 0)
     bear = sum(1 for p, _ in parts if p < 0)
     agree = max(bull, bear) / max(bull + bear, 1)
     conf = int(min(95, min(abs(score) / (cap * 0.7), 1) * 75 + agree * 20))
     kind, signal = ("call", "CALL (покупка)") if score >= thr else \
                    ("put", "PUT (продажа)") if score <= -thr else ("wait", "ЖДАТЬ")
+    # при двух и более источниках сигнал нужно подтвердить минимум двумя факторами в одну сторону
+    sources = (len(ind_keys) if "tech" in directional else 0) + len(directional - {"tech"})
+    if kind in ("call", "put") and sources >= 2 and (bull if kind == "call" else bear) < 2:
+        kind, signal = "wait", "ЖДАТЬ"
+        parts.append((0, "Баллов хватает, но подтверждающий фактор только один, сигнал не выдан"))
     if "news" in methods:
         w = in_blackout(blackout)
         if w and kind != "wait":
@@ -611,11 +882,11 @@ def fmt_minutes(m):
     return f"{m} мин" if m < 60 else f"{m // 60} ч"
 
 
-def analyze_symbol(sym, interval, threshold=35, blackout=None, methods=None, weights=None, opts=None):
+def analyze_symbol(sym, interval, threshold=35, blackout=None, methods=None, weights=None, opts=None, indicators=None):
     """Загрузка данных, анализ, фильтры (волатильность, сессии, старший ТФ), экспирация."""
     opts = opts if opts is not None else {}
     d = fetch(sym, interval)
-    res = analyze(d, threshold, blackout, methods, weights)
+    res = analyze(d, threshold, blackout, methods, weights, indicators)
     if not res or res["kind"] not in ("call", "put"):
         return res
     direction = "CALL" if res["kind"] == "call" else "PUT"

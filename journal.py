@@ -31,11 +31,12 @@ def is_new(last, sym, kind, now, exp_min):
     return True
 
 
-def new_entry(sym, itv, res, methods, now=None):
+def new_entry(sym, itv, res, methods, now=None, indicators=None):
     now = now or time.time()
     return {"id": f"{int(now * 1000)}-{sym}", "sym": sym, "itv": itv, "dir": res["kind"],
             "entry": res["price"], "ts": now, "exp": res.get("exp_min", 5), "score": res["score"],
-            "conf": res["conf"], "methods": sorted(methods), "status": "pending", "exit": None}
+            "conf": res["conf"], "methods": sorted(methods), "ind": sorted(indicators or []),
+            "status": "pending", "exit": None}
 
 
 def due(entries, now=None):
@@ -59,7 +60,19 @@ def settle(e, price, now=None):
     return e
 
 
-def stats(entries):
+def label(e, names=None):
+    """Название набора методов (и индикаторов) для статистики."""
+    names = names or {}
+    out = []
+    for m in e["methods"]:
+        if m == "tech" and e.get("ind"):
+            out.append(names.get("tech", "tech") + "[" + ", ".join(names.get(i, i) for i in e["ind"]) + "]")
+        else:
+            out.append(names.get(m, m))
+    return " + ".join(out)
+
+
+def stats(entries, names=None):
     s = {"win": 0, "loss": 0, "draw": 0, "stale": 0, "pending": 0}
     by_dir = {"call": [0, 0], "put": [0, 0]}
     by_methods = {}
@@ -69,7 +82,7 @@ def stats(entries):
             w = 1 if e["status"] == "win" else 0
             by_dir[e["dir"]][0] += w
             by_dir[e["dir"]][1] += 1
-            k = " + ".join(e["methods"])
+            k = label(e, names)
             by_methods.setdefault(k, [0, 0])
             by_methods[k][0] += w
             by_methods[k][1] += 1
