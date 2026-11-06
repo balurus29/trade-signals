@@ -16,7 +16,8 @@ from kivy.uix.label import Label
 from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.slider import Slider
-from kivy.uix.spinner import Spinner
+from kivy.uix.dropdown import DropDown
+from kivy.uix.spinner import Spinner, SpinnerOption
 from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
 
@@ -112,7 +113,7 @@ class GlowButton(ButtonBehavior, GlowBox):
 
     def _boost(self):
         if self.state == "down":
-            return 0.4
+            return 0.55
         return 0.25 if self.active else 0.0
 
     def on_release(self):
@@ -171,8 +172,147 @@ def styled_input(**kw):
                      padding=[dp(12), dp(13)], **kw)
 
 
-def styled_spinner(**kw):
-    return Spinner(background_normal="", background_color=(1, 1, 1, 0.09), color=(1, 1, 1, 1), **kw)
+def payout_color(v):
+    return "33f280" if v >= 90 else "00d9ff" if v >= 80 else "ffb833" if v >= 70 else "ff4d6b"
+
+
+class NeonOption(SpinnerOption):
+    """Строка выпадающего списка: тёмная плашка, цветная метка слева, выплата справа."""
+    selected = BooleanProperty(False)
+
+    def __init__(self, accent=CYAN, **kw):
+        super().__init__(**kw)
+        self.accent = accent
+        self.background_normal = self.background_down = ""
+        self.background_color = (0, 0, 0, 0)
+        self.size_hint_y = None
+        self.height = dp(46)
+        self.halign = "left"
+        self.padding_x = dp(18)
+        self.valign = "middle"
+        self.bind(size=self._fit_text)
+        self.pay = Label(markup=True, font_size=sp(13), bold=True, halign="right", valign="middle",
+                         size_hint=(None, None), size=(dp(64), dp(46)))
+        self.add_widget(self.pay)
+        self.bind(pos=self._layout, size=self._layout, state=self._draw, selected=self._draw)
+        self.refresh()
+
+    def _fit_text(self, *_):
+        room = dp(80) if self.pay.text else dp(12)
+        self.text_size = (max(dp(20), self.width - room), None)
+
+    def refresh(self):
+        v = core.PAYOUTS.get(self.text)
+        self.pay.text = f"[color={payout_color(v)}]{v}%[/color]" if v else ""
+        self._fit_text()
+
+    def _layout(self, *_):
+        self.pay.pos = (self.right - dp(74), self.y)
+        self._draw()
+
+    def _draw(self, *_):
+        a = self.accent
+        self.canvas.before.clear()
+        with self.canvas.before:
+            Color(a[0], a[1], a[2], 0.38 if self.state == "down" else 0.22 if self.selected else 0.0)
+            Rectangle(pos=self.pos, size=self.size)
+            Color(1, 1, 1, 0.05)
+            Rectangle(pos=self.pos, size=(self.width, self.height / 2))
+            Color(a[0], a[1], a[2], 0.18)
+            Line(points=[self.x + dp(10), self.y, self.right - dp(10), self.y], width=dp(1))
+            if self.selected:
+                Color(a[0], a[1], a[2], 1)
+                Rectangle(pos=(self.x, self.y + dp(6)), size=(dp(4), self.height - dp(12)))
+        self.color = (1, 1, 1, 1) if self.selected or self.state == "down" else (0.86, 0.9, 1, 1)
+        self.bold = self.selected
+
+
+class NeonDropDown(DropDown):
+    def __init__(self, accent=CYAN, **kw):
+        super().__init__(**kw)
+        self.accent = accent
+        self.max_height = dp(380)
+        self.bar_color = [accent[0], accent[1], accent[2], 0.9]
+        self.bind(pos=self._draw, size=self._draw)
+
+    def _draw(self, *_):
+        a = self.accent
+        self.canvas.before.clear()
+        with self.canvas.before:
+            for i in range(4, 0, -1):
+                e = i * dp(2.5)
+                Color(a[0], a[1], a[2], 0.04 * (5 - i))
+                RoundedRectangle(pos=(self.x - e, self.y - e), size=(self.width + 2 * e, self.height + 2 * e),
+                                 radius=[dp(12) + e])
+            Color(0.04, 0.05, 0.13, 0.98)
+            RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(12)])
+            Color(a[0], a[1], a[2], 0.9)
+            Line(rounded_rectangle=(self.x, self.y, self.width, self.height, dp(12)), width=dp(1.3))
+
+
+class NeonSpinner(Spinner):
+    """Выпадающий список в общем неоновом стиле: свечение, блик, стрелка, подсвеченный выбор."""
+    glow = ListProperty([0.0, 0.85, 1.0, 1])
+    right_text = StringProperty("")
+
+    def __init__(self, glow=CYAN, **kw):
+        kw.setdefault("option_cls", NeonOption)
+        super().__init__(**kw)
+        self.glow = list(glow)
+        self.background_normal = self.background_down = ""
+        self.background_color = (0, 0, 0, 0)
+        self.color = (1, 1, 1, 1)
+        self.bold = True
+        self.dropdown_cls = lambda **k: NeonDropDown(accent=self.glow, **k)
+        self.tag = Label(markup=True, font_size=sp(13), bold=True, halign="right", valign="middle",
+                         size_hint=(None, None), size=(dp(54), dp(30)))
+        self.add_widget(self.tag)
+        self.bind(pos=self._redraw, size=self._redraw, state=self._redraw, glow=self._redraw,
+                  right_text=self._tag_text)
+        self.bind(is_open=self._opened)
+        self._redraw()
+
+    def _tag_text(self, *_):
+        self.tag.text = self.right_text
+
+    def _opened(self, _w, is_open):
+        if not is_open:
+            return
+        try:
+            for o in self._dropdown.container.children:
+                o.accent = self.glow
+                o.selected = (o.text == self.text)
+                if hasattr(o, "refresh"):
+                    o.refresh()
+        except Exception:
+            pass
+
+    def _redraw(self, *_):
+        x, y = self.pos
+        w, h = self.size
+        c = self.glow
+        down = self.state == "down"
+        self.tag.pos = (x + w - dp(66), y + (h - dp(30)) / 2)
+        self.canvas.before.clear()
+        with self.canvas.before:
+            for i in range(5, 0, -1):
+                e = i * dp(2)
+                Color(c[0], c[1], c[2], (0.07 if down else 0.04) * (6 - i))
+                RoundedRectangle(pos=(x - e, y - e), size=(w + 2 * e, h + 2 * e), radius=[dp(12) + e])
+            Color(c[0] * 0.18 + 0.03, c[1] * 0.18 + 0.03, c[2] * 0.18 + 0.08, 0.95)
+            RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(12)])
+            Color(1, 1, 1, 0.10)
+            RoundedRectangle(pos=(x + dp(2), y + h / 2), size=(max(w - dp(4), 0), max(h / 2 - dp(2), 0)),
+                             radius=[dp(12), dp(12), dp(3), dp(3)])
+            Color(c[0], c[1], c[2], 1 if down else 0.85)
+            Line(rounded_rectangle=(x, y, w, h, dp(12)), width=dp(1.3))
+            ax, ay = x + w - dp(16), y + h / 2          # стрелка вниз
+            Color(c[0], c[1], c[2], 1)
+            Line(points=[ax - dp(5), ay + dp(2.5), ax, ay - dp(2.5), ax + dp(5), ay + dp(2.5)], width=dp(1.6))
+
+
+def styled_spinner(glow=CYAN, **kw):
+    return NeonSpinner(glow=glow, **kw)
 
 
 def wrap_label(text="", size=14, color=(1, 1, 1, 0.85), markup=False, **kw):
@@ -226,15 +366,16 @@ class Root(BoxLayout):
 
         # ── пара ──
         row0 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
-        self.group = styled_spinner(text="", values=[], size_hint_x=0.5)
-        self.pair = styled_spinner(text="", values=[])
+        self.group = styled_spinner(glow=VIOLET, text="", values=[], size_hint_x=0.42)
+        self.pair = styled_spinner(glow=CYAN, text="", values=[])
         self.group.bind(text=self.on_group)
-        self.pair.bind(text=lambda *_: self.update_fav_btn())
+        self.pair.bind(text=lambda *_: (self.update_fav_btn(), self.update_payout()))
         row0.add_widget(self.group)
         row0.add_widget(self.pair)
 
         row1 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
-        self.interval = styled_spinner(text=self.s["interval"], values=("1m", "5m", "15m", "1h"), size_hint_x=0.22)
+        self.interval = styled_spinner(glow=(1.0, 0.72, 0.2, 1), text=self.s["interval"], values=core.TF_LIST,
+                                       size_hint_x=0.22)
         self.fav_btn = GlowButton(text="В избранное", font=13, radius=dp(12), glow_color=[1.0, 0.72, 0.2, 1],
                                   glow_a=0.45, fill=[0.3, 0.2, 0.0, 0.9])
         self.fav_btn.bind(on_release=lambda *_: self.toggle_fav())
@@ -307,6 +448,8 @@ class Root(BoxLayout):
         self.update_fav_btn()
         self.update_journal_btn()
         self._tick_ev = Clock.schedule_interval(self._tick, 15)
+        Clock.schedule_once(self.refresh_payouts, 3)
+        Clock.schedule_interval(self.refresh_payouts, 1800)
 
     # ───────── хранение ─────────
     def _read_json(self, name, default):
@@ -362,6 +505,7 @@ class Root(BoxLayout):
 
         box.add_widget(wrap_label("Свой тикер (например EURUSD_otc или #AAPL_otc)", 13))
         self.custom = styled_input(text=s["custom"], hint_text="Необязательно")
+        self.custom.bind(text=self.update_payout)
         row(self.custom)
 
         box.add_widget(wrap_label("Ключ OTCharts (хранится только на телефоне)", 13))
@@ -432,10 +576,12 @@ class Root(BoxLayout):
         box.add_widget(self.advice)
         box.add_widget(wrap_label("Готовые сочетания. Это общие правила технического анализа, на истории они "
                                   "не проверены. Нажмите, чтобы применить:", 12, color=(1, 1, 1, 0.6)))
+        self.preset_btns = {}
         for p in core.PRESETS:
-            btn = GlowButton(text=p["name"], font=14, size_hint_y=None, height=dp(38), radius=dp(12),
-                             glow_color=list(VIOLET), glow_a=0.5, fill=[0.2, 0.1, 0.36, 0.9])
+            btn = GlowButton(text=p["name"], font=14, size_hint_y=None, height=dp(42), radius=dp(12),
+                             glow_color=list(VIOLET), glow_a=0.35, fill=[0.12, 0.07, 0.22, 0.9])
             btn.bind(on_release=lambda _w, p=p: self.apply_preset(p))
+            self.preset_btns[p["name"]] = btn
             box.add_widget(btn)
             box.add_widget(wrap_label(", ".join(core.INDICATORS[k][0] for k in p["ind"]) + ". " + p["text"],
                                       12, color=(1, 1, 1, 0.6)))
@@ -462,13 +608,28 @@ class Root(BoxLayout):
         self.ind_popup = Popup(title="Индикаторы и сочетания", content=sv, size_hint=(0.96, 0.92), background="",
                                background_color=(0.04, 0.05, 0.12, 1), separator_color=CYAN)
         self.ind_popup.bind(on_dismiss=lambda *_: self.save_settings())
+        for b in self.chips.values():
+            b.bind(active=lambda *_: self._on_ind_change())
         self._on_ind_change()
 
     def open_indicators(self):
         self.ind_popup.open()
 
+    def _mark_presets(self):
+        """Подсвечивает набор, который сейчас полностью совпадает с выбором индикаторов и методов."""
+        ind = set(self.s["indicators"])
+        meth = {k for k, b in self.chips.items() if b.active and k != "news"}
+        for p in core.PRESETS:
+            btn = self.preset_btns[p["name"]]
+            on = ind == set(p["ind"]) and meth == set(p["methods"]) - {"news"}
+            btn.text = p["name"] + ("  (выбран)" if on else "")
+            btn.glow_a = 1.0 if on else 0.35
+            btn.fill = [0.46, 0.22, 0.88, 0.95] if on else [0.12, 0.07, 0.22, 0.9]
+            btn.label.color = (1, 1, 1, 1) if on else (0.78, 0.74, 0.92, 1)
+
     def _on_ind_change(self):
         self.s["indicators"] = [k for k, b in self.ind_btns.items() if b.active]
+        self._mark_presets()
         colors = {"ok": "33f280", "warn": "ffb833", "tip": "00d9ff"}
         lines = [f"[color={colors[k]}]{t}[/color]" for k, t in core.advise(self.s["indicators"])]
         self.advice.text = f"[b]Выбрано индикаторов: {len(self.s['indicators'])}[/b]\n" + "\n".join(lines)
@@ -488,6 +649,9 @@ class Root(BoxLayout):
         mg = {"deposit": "1000", "first": "10", "payout": "85", "steps": "5", "mult": "2.2", "winrate": "",
               "mode": "Возместить убыток"}
         mg.update(self.s.get("mg", {}))
+        v = core.PAYOUTS.get(self.current_symbol())
+        if v:
+            mg["payout"] = str(v)               # выплата выбранной пары из Pocket Option
         st = journal.stats(self.entries)
         if not mg["winrate"]:
             mg["winrate"] = f"{st['rate']:.0f}" if st["n"] >= 20 else "55"
@@ -510,7 +674,7 @@ class Root(BoxLayout):
         field("payout", "Выплата брокера, %")
         field("steps", "Ступеней (1-12)")
         field("winrate", "Процент выигрышей, %")
-        self.mg_mode = styled_spinner(text=mg["mode"], values=("Возместить убыток", "Множитель"),
+        self.mg_mode = styled_spinner(glow=COLORS["put"], text=mg["mode"], values=("Возместить убыток", "Множитель"),
                                       size_hint_y=None, height=dp(44))
         self.mg_mode.bind(text=lambda *_: self._mg_calc())
         box.add_widget(self.mg_mode)
@@ -581,7 +745,12 @@ class Root(BoxLayout):
 
     # ───────── каталог OTC ─────────
     def _restore_catalog(self):
-        syms = self._read_json("otc_catalog.json", None)
+        data = self._read_json("otc_catalog.json", None)
+        if isinstance(data, dict):                      # новый формат: символы + выплаты
+            syms = data.get("symbols")
+            core.PAYOUTS.update(data.get("payout", {}))
+        else:
+            syms = data
         if syms:
             try:
                 core.apply_otc_catalog(syms)
@@ -598,11 +767,27 @@ class Root(BoxLayout):
         try:
             syms = core.load_otc_catalog()
             n = core.apply_otc_catalog(syms)
-            self._write("otc_catalog.json", json.dumps(syms))
+            self._write("otc_catalog.json", json.dumps({"symbols": syms, "payout": core.PAYOUTS}))
             Clock.schedule_once(lambda dt: self._cat_done(n, None))
         except Exception as e:
             err = str(e)
             Clock.schedule_once(lambda dt: self._cat_done(0, err))
+
+    def refresh_payouts(self, *_):
+        """Тихо обновляет выплаты (1 запрос из 7000 в сутки), список пар не трогает."""
+        if not core.OTC_KEY or getattr(self, "_pay_busy", False):
+            return
+        self._pay_busy = True
+
+        def work():
+            try:
+                syms = core.load_otc_catalog()
+                self._write("otc_catalog.json", json.dumps({"symbols": syms, "payout": core.PAYOUTS}))
+                Clock.schedule_once(lambda dt: self.update_payout())
+            except Exception:
+                pass
+            self._pay_busy = False
+        threading.Thread(target=work, daemon=True).start()
 
     def _cat_done(self, n, err):
         self.cat_btn.disabled = False
@@ -640,6 +825,11 @@ class Root(BoxLayout):
 
     def current_symbol(self):
         return self.custom.text.strip() or self.pair.text
+
+    def update_payout(self, *_):
+        sym = self.custom.text.strip() or self.pair.text
+        v = core.PAYOUTS.get(sym)
+        self.pair.right_text = f"[color={payout_color(v)}]{v}%[/color]" if v else ""
 
     def update_fav_btn(self, *_):
         self.fav_btn.text = "Убрать из избр." if self.pair.text in self.s["favs"] else "В избранное"
@@ -778,6 +968,9 @@ class Root(BoxLayout):
             return
         self.style_signal(res["kind"], res["signal"])
         line = f"{sym.upper()} {itv} | цена {res['price']:.5g} | балл {res['score']:+d} (порог {res['thr']}) | {res['conf']}%"
+        v = core.PAYOUTS.get(sym)
+        if v:
+            line += f" | выплата {v}% (безубыток {100 / (1 + v / 100):.1f}%)"
         if res.get("exp_text"):
             line += "\n" + res["exp_text"]
         self.info.text = line

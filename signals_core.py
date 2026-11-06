@@ -43,8 +43,28 @@ def to_yahoo(sym):
     return s
 
 
+YAHOO_BUILD = {"3m": ("1m", 3), "10m": ("5m", 2)}     # Yahoo не отдаёт эти ТФ, собираем сами
+
+
+def resample(d, k):
+    """Склеивает по k соседних свечей (отсчёт с конца, чтобы последняя свеча была полной)."""
+    n = len(d["c"]) // k * k
+    if n < k:
+        return d
+    sl = slice(len(d["c"]) - n, None)
+    out = {}
+    for key in d:
+        a = np.asarray(d[key])[sl].reshape(-1, k)
+        out[key] = (a[:, 0] if key == "o" else a.max(1) if key == "h" else a.min(1) if key == "l"
+                    else a[:, -1] if key == "c" else a.sum(1))
+    return out
+
+
 def _fetch_yahoo(sym, interval="5m", rng=None):
-    rng = rng or ("1y" if interval == "1d" else "1mo" if interval in ("1h", "60m") else "5d")
+    if interval in YAHOO_BUILD:
+        base, k = YAHOO_BUILD[interval]
+        return resample(_fetch_yahoo(sym, base, rng), k)
+    rng = rng or ("1y" if interval == "1d" else "1mo" if interval in ("1h", "60m", "30m") else "5d")
     try:
         import certifi
         ctx = ssl.create_default_context(cafile=certifi.where())
@@ -66,7 +86,10 @@ def _fetch_yahoo(sym, interval="5m", rng=None):
 # ───────── OTC через OTCharts (Pocket Option) ─────────
 OTC_URL = "https://otcharts.com/v1/candles"
 OTC_KEY = ""          # задаётся из приложения (вводится на телефоне, в чат не отправляется)
-TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
+TF_SECONDS = {"1m": 60, "2m": 120, "3m": 180, "5m": 300, "10m": 600, "15m": 900, "30m": 1800,
+              "1h": 3600, "4h": 14400, "1d": 86400}
+TF_LIST = ("1m", "2m", "3m", "5m", "10m", "15m", "30m", "1h")
+PAYOUTS = {}          # символ -> выплата в процентах (из каталога OTCharts)
 OTC_ERRORS = {
     400: "Неверный символ или таймфрейм для OTC",
     401: "API-ключ OTCharts не подошёл (проверьте ключ и подтверждение почты)",
@@ -171,6 +194,17 @@ def load_otc_catalog():
     except urllib.error.HTTPError as e:
         raise RuntimeError(OTC_ERRORS.get(e.code, f"OTCharts: ошибка {e.code}"))
     syms = [x["symbol"] for x in data.get("symbols", []) if x.get("symbol")]
+    pay = {}
+    for x in data.get("symbols", []):
+        try:
+            v = float(x.get("payout"))
+        except (TypeError, ValueError):
+            continue
+        v = v * 100 if 0 < v <= 1.5 else v          # доля (0.92) или проценты (92)
+        if 0 < v <= 300:
+            pay[x["symbol"]] = round(v)
+    PAYOUTS.clear()
+    PAYOUTS.update(pay)
     if not syms:
         raise RuntimeError("OTCharts не вернул список инструментов")
     return syms
@@ -854,7 +888,8 @@ def vol_ratio(d):
 
 
 def htf_interval(sym, interval):
-    return {"1m": "5m", "5m": "15m", "15m": "1h", "1h": "4h" if is_otc(sym) else "1d"}.get(interval)
+    return {"1m": "5m", "2m": "10m", "3m": "15m", "5m": "15m", "10m": "30m", "15m": "1h", "30m": "1h",
+            "1h": "4h" if is_otc(sym) else "1d"}.get(interval)
 
 
 def htf_trend(sym, htf):
