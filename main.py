@@ -37,7 +37,7 @@ STATUS_RU = {"win": ("плюс", "33f280"), "loss": ("минус", "ff4d6b"), "d
              "stale": ("не проверен", "ffb833"), "pending": ("ждёт", "99aad9")}
 
 DEFAULTS = {"methods": list(core.ALL_METHODS), "weights": {}, "thr": 35, "blackout": "", "mtf": True,
-            "vol": True, "session": True, "notify": True, "sound": True, "favs": [],
+            "vol": True, "session": True, "exp": "Авто", "notify": True, "sound": True, "favs": [],
             "group": "", "pair": "", "interval": "5m", "custom": "",
             "indicators": list(core.DEFAULT_INDICATORS), "mg": {}, "mg2": {}, "risk": dict(risk.DEFAULT),
             "scan": {"scope": "Текущая группа", "picked": [], "pmin": "", "pmax": ""}}
@@ -383,6 +383,12 @@ class Root(BoxLayout):
             row1.add_widget(w)
         self.interval.bind(text=self.on_interval)
 
+        row1b = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+        self.exp_sp = styled_spinner(glow=COLORS["call"], title="Экспирация сигнала (Авто — подбирает приложение)",
+                                     text=self.exp_label(self.s.get("exp", "Авто")), values=self.EXP_VALUES)
+        self.exp_sp.bind(text=lambda *_: self.on_exp())
+        row1b.add_widget(self.exp_sp)
+
         # ── методы ──
         self.chips = {}
         mrow1 = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
@@ -440,7 +446,7 @@ class Root(BoxLayout):
         warn = Label(text="Не гарантия прибыли. Бинарные опционы - высокий риск.",
                      font_size=sp(11), color=(1, 1, 1, 0.45), size_hint_y=None, height=dp(18))
 
-        for w in (head, row0, row1, mrow1, mrow2, row3, self.card, cbox, panel, warn):
+        for w in (head, row0, row1, row1b, mrow1, mrow2, row3, self.card, cbox, panel, warn):
             self.add_widget(w)
 
         self._build_settings()
@@ -1069,11 +1075,29 @@ class Root(BoxLayout):
             self.card.glow_a = 0.45
 
     # ───────── запуск анализа ─────────
+    EXP_VALUES = ["Экспирация: " + x for x in ("Авто", "1 мин", "2 мин", "3 мин", "5 мин", "10 мин", "15 мин", "30 мин", "60 мин")]
+
+    @staticmethod
+    def exp_label(v):
+        v = str(v).replace("Экспирация:", "").strip() or "Авто"
+        return "Экспирация: " + v
+
+    def on_exp(self):
+        self.s["exp"] = self.exp_sp.text.replace("Экспирация:", "").strip()
+        self.save_settings()
+
+    def exp_minutes(self):
+        t = str(self.s.get("exp", "Авто")).replace("Экспирация:", "").strip()
+        try:
+            return int(t.split()[0])
+        except (ValueError, IndexError):
+            return None
+
     def params(self):
         self.save_settings()
         s = self.s
         bl = [x for x in s["blackout"].split(",") if x.strip()]
-        opts = {"mtf": s["mtf"], "vol": s["vol"], "session": s["session"]}
+        opts = {"mtf": s["mtf"], "vol": s["vol"], "session": s["session"], "exp": self.exp_minutes()}
         return self.interval.text, s["thr"], bl, set(s["methods"]), s["weights"], opts, list(s["indicators"])
 
     def run(self):
