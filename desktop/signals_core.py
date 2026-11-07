@@ -969,8 +969,18 @@ def analyze_symbol(sym, interval, threshold=35, blackout=None, methods=None, wei
                     res["parts"].append((0, f"Старший ТФ {htf}: {names[tr]}, не противоречит сигналу"))
     if res["kind"] in ("call", "put"):
         m, n = expiry_hint(interval, res["conf"])
-        res["exp_min"], res["exp_candles"] = m, n
-        res["exp_text"] = f"Экспирация ориентир: {fmt_minutes(m)} ({n} {'свеча' if n == 1 else 'свечи'})"
+        fixed = opts.get("exp")
+        if fixed:
+            m = int(fixed)
+            n = max(1, round(m * 60 / TF_SECONDS.get(interval, 300)))
+            res["exp_min"], res["exp_candles"] = m, n
+            note = ""
+            if m * 60 > 6 * TF_SECONDS.get(interval, 300):
+                note = ". Срок намного длиннее свечи: точность ниже, лучше взять свечу покрупнее"
+            res["exp_text"] = f"Экспирация (ваша): {fmt_minutes(m)} ({n} {'свеча' if n == 1 else 'свечи' if n < 5 else 'свечей'}){note}"
+        else:
+            res["exp_min"], res["exp_candles"] = m, n
+            res["exp_text"] = f"Экспирация ориентир: {fmt_minutes(m)} ({n} {'свеча' if n == 1 else 'свечи'})"
     return res
 
 
