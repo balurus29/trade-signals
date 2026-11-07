@@ -8,6 +8,7 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.graphics import Color, Ellipse, InstructionGroup, Line, Rectangle, RoundedRectangle
 from kivy.graphics.texture import Texture
+from kivy.core.clipboard import Clipboard
 from kivy.core.window import Window
 from kivy.metrics import dp, sp
 from kivy.properties import BooleanProperty, ListProperty, NumericProperty, ObjectProperty, StringProperty
@@ -24,6 +25,7 @@ from kivy.uix.widget import Widget
 import alerts
 import journal
 import martingale
+import risk
 import signals_core as core
 
 CYAN, VIOLET = (0.0, 0.85, 1.0, 1), (0.62, 0.36, 1.0, 1)
@@ -38,7 +40,7 @@ STATUS_RU = {"win": ("плюс", "33f280"), "loss": ("минус", "ff4d6b"), "d
 DEFAULTS = {"methods": list(core.ALL_METHODS), "weights": {}, "thr": 35, "blackout": "", "mtf": True,
             "vol": True, "session": True, "notify": True, "sound": True, "favs": [],
             "group": "", "pair": "", "interval": "5m", "custom": "",
-            "indicators": list(core.DEFAULT_INDICATORS), "mg": {}, "mg2": {},
+            "indicators": list(core.DEFAULT_INDICATORS), "mg": {}, "mg2": {}, "risk": dict(risk.DEFAULT),
             "scan": {"scope": "Текущая группа", "picked": [], "pmin": "", "pmax": ""}}
 
 
@@ -407,7 +409,7 @@ class Root(BoxLayout):
             row3.add_widget(b)
 
         # ── карточка сигнала ──
-        self.card = GlowBox(orientation="vertical", size_hint_y=None, height=dp(122), padding=dp(6),
+        self.card = GlowBox(orientation="vertical", size_hint_y=None, height=dp(144), padding=dp(6),
                             radius=dp(20))
         self.signal = Label(text="Выберите пару и нажмите «Анализ»", font_size=sp(21), bold=True,
                             halign="center", valign="middle")
@@ -415,8 +417,10 @@ class Root(BoxLayout):
         self.info = Label(text="", font_size=sp(12), color=(1, 1, 1, 0.78), size_hint_y=None, height=dp(56),
                           halign="center", valign="top")
         self.info.bind(size=lambda w, v: setattr(w, "text_size", v))
+        self.timer = Label(text="", font_size=sp(12), bold=True, size_hint_y=None, height=dp(20))
         self.card.add_widget(self.signal)
         self.card.add_widget(self.info)
+        self.card.add_widget(self.timer)
         self.style_signal("wait")
 
         # ── график ──
@@ -446,6 +450,7 @@ class Root(BoxLayout):
         self.update_fav_btn()
         self.update_journal_btn()
         self._tick_ev = Clock.schedule_interval(self._tick, 15)
+        Clock.schedule_interval(self._tick_timer, 1)
         Clock.schedule_once(self.refresh_payouts, 3)
         Clock.schedule_interval(self.refresh_payouts, 60)   # выплаты Pocket Option меняются часто
 
@@ -482,6 +487,9 @@ class Root(BoxLayout):
             for k, b in (("mtf", self.t_mtf), ("vol", self.t_vol), ("session", self.t_ses),
                          ("notify", self.t_notify), ("sound", self.t_sound)):
                 s[k] = b.active
+        if hasattr(self, "r_dep"):
+            s["risk"] = {"on": self.r_on.active, "deposit": self.r_dep.text, "stake_pct": self.r_stake.text,
+                         "loss_pct": self.r_loss.text, "streak": self.r_streak.text, "pause_min": self.r_pause.text}
         s["interval"] = self.interval.text
         s["group"], s["pair"] = self.group.text, self.pair.text
         self._write("settings.json", json.dumps(s))
@@ -534,6 +542,29 @@ class Root(BoxLayout):
         self.t_notify = toggle("Уведомления", "notify", COLORS["call"])
         self.t_sound = toggle("Звук и вибрация", "sound", COLORS["call"])
         row(self.t_notify, self.t_sound, h=40)
+
+        box.add_widget(wrap_label("[b]Управление рисками[/b] (можно отключить)", 15, color=COLORS["put"], markup=True))
+        rk = {**risk.DEFAULT, **s.get("risk", {})}
+        self.r_on = GlowButton(text="Управление рисками", font=13, toggle=True, dim=True, active=bool(rk["on"]),
+                               radius=dp(12), glow_color=list(COLORS["put"]), glow_a=0.55,
+                               fill=[0.3, 0.05, 0.1, 0.9])
+        row(self.r_on, h=40)
+
+        def rfield(label, key, flt="float"):
+            lab = Label(text=label, font_size=sp(13), size_hint_x=0.6, halign="left", valign="middle")
+            lab.bind(size=lambda w, v: setattr(w, "text_size", v))
+            ti = styled_input(text=str(rk[key]), input_filter=flt)
+            row(lab, ti, h=44)
+            return ti
+        self.r_dep = rfield("Депозит", "deposit")
+        self.r_stake = rfield("Ставка, % депозита", "stake_pct")
+        self.r_loss = rfield("Лимит убытка за день, %", "loss_pct")
+        self.r_streak = rfield("Пауза после проигрышей подряд", "streak", "int")
+        self.r_pause = rfield("Длина паузы, минут", "pause_min", "int")
+        box.add_widget(wrap_label("Считается по сигналам из журнала: предполагается, что вы входите по каждому. "
+                                  "При достижении лимита новые сигналы не показываются, пока не кончится пауза или "
+                                  "день. Выключите кнопкой выше, и ограничений не будет.",
+                                  12, color=(1, 1, 1, 0.55)))
 
         box.add_widget(wrap_label("Вес методов: 0 отключает метод, 2 удваивает его вклад", 13))
         self.wsliders, self.wlabels = {}, {}
@@ -670,6 +701,9 @@ class Root(BoxLayout):
         v = core.PAYOUTS.get(self.current_symbol())
         if v:
             m["payout"] = str(v)
+        cfg = self.risk_cfg()
+        if cfg["on"] and risk.stake(cfg):
+            m["first"] = f"{risk.stake(cfg):g}"          # первая ставка из плана рисков
         box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8), padding=dp(8))
         box.bind(minimum_height=box.setter("height"))
         self.m2_in = {}
@@ -726,7 +760,16 @@ class Root(BoxLayout):
             cell(f"{r['stake']:.2f}")
             cell(f"{r['total']:.2f}")
         last = p["rows"][-1]
-        self.m2_sum.text = (f"Чтобы выдержать {steps} проигрышей подряд, нужно иметь на счёте "
+        cfg = risk.config(self.s.get("risk"))
+        rnote = ""
+        if cfg["deposit"]:
+            pct = 100 * last["total"] / cfg["deposit"]
+            warn = cfg["on"] and cfg["loss_pct"] and pct > cfg["loss_pct"]
+            rnote = (f"Вся серия = [b]{pct:.0f}%[/b] депозита {cfg['deposit']:g}."
+                     + (f" [color=ff4d6b]Это больше дневного лимита убытка ({cfg['loss_pct']:g}%): "
+                        f"защита остановит сигналы раньше, чем серия дойдёт до конца.[/color]" if warn else "")
+                     + "\n")
+        self.m2_sum.text = rnote + (f"Чтобы выдержать {steps} проигрышей подряд, нужно иметь на счёте "
                             f"[b]{last['total']:.2f}[/b].\nВыигрыш на любой ступени возвращает все потери и "
                             f"даёт чистую прибыль [b]{first * pay / 100:.2f}[/b].\n"
                             f"[color=99aad9]Мартингейл не создаёт преимущества: если процент выигрышей ниже "
@@ -737,6 +780,11 @@ class Root(BoxLayout):
         mg = {"deposit": "1000", "first": "10", "payout": "85", "steps": "5", "mult": "2.2", "winrate": "",
               "mode": "Возместить убыток"}
         mg.update(self.s.get("mg", {}))
+        cfg = self.risk_cfg()
+        if cfg["on"] and cfg["deposit"]:
+            mg["deposit"] = f"{cfg['deposit']:g}"
+            if risk.stake(cfg):
+                mg["first"] = f"{risk.stake(cfg):g}"
         v = core.PAYOUTS.get(self.current_symbol())
         if v:
             mg["payout"] = str(v)               # выплата выбранной пары из Pocket Option
@@ -989,6 +1037,7 @@ class Root(BoxLayout):
 
     # ───────── карточка ─────────
     def style_signal(self, kind, text=None):
+        self._sig = None                     # таймер сигнала включает только show()
         c = COLORS[kind]
         self.card.glow_color = list(c)
         self.card.fill = [c[0] * 0.2 + 0.03, c[1] * 0.2 + 0.03, c[2] * 0.2 + 0.06, 0.92]
@@ -1166,6 +1215,15 @@ class Root(BoxLayout):
     def _launch(self, pairs, notify):
         if self._busy:
             return
+        cfg = self.risk_cfg()
+        if cfg["on"]:
+            rs = risk.evaluate(self.entries, time.time(), cfg)
+            if rs["blocked"]:
+                self.style_signal("pause", "ПАУЗА по рискам")
+                self.info.text = rs["why"]
+                self.reasons.text = ("Защита депозита включена. Новые сигналы временно не показываются.\n"
+                                     "Отключить: Настройки > Управление рисками.")
+                return
         self._busy = True
         self.btn.disabled = self.scan_btn.disabled = True
         self.style_signal("wait", "Загрузка...")
@@ -1198,6 +1256,7 @@ class Root(BoxLayout):
                 self._register(sym, itv, res, methods, notify, now, inds)
             else:
                 self.last_sig.pop(sym, None)
+        self._list_ts = now
         if len(pairs) == 1:
             sym, res, err = results[0]
             self.show(sym, itv, res, err)
@@ -1207,13 +1266,32 @@ class Root(BoxLayout):
     def _register(self, sym, itv, res, methods, notify, now, inds):
         if not journal.is_new(self.last_sig, sym, res["kind"], now, res["exp_min"]):
             return
-        self.entries.append(journal.new_entry(sym, itv, res, methods, now, inds if 'tech' in methods else []))
+        self.entries.append(journal.new_entry(sym, itv, res, methods, now, inds if 'tech' in methods else [],
+                                                  core.PAYOUTS.get(sym)))
         journal.save(os.path.join(self.dir, "journal.json"), self.entries)
         self.update_journal_btn()
         if notify and self.s["notify"]:
             alerts.alert(f"{res['signal'].split(' ')[0]} {sym}",
                          f"{sym} {itv}: уверенность {res['conf']}%. {res.get('exp_text', '')}",
                          beep_path=os.path.join(self.dir, "beep.wav"), loud=self.s["sound"])
+
+    def _tick_timer(self, _dt):
+        sg = getattr(self, "_sig", None)
+        if not sg:
+            self.timer.text = ""
+            return
+        now = time.time()
+        tf, age = sg["tf"], now - sg["ts"]
+        rem = tf - (now % tf)
+
+        def mm(x):
+            return f"{int(x) // 60}:{int(x) % 60:02d}"
+        if age >= tf:
+            self.timer.text = "Сигнал устарел: прошла целая свеча. Повторите анализ"
+            self.timer.color = COLORS["put"]
+        else:
+            self.timer.text = f"Возраст сигнала {mm(age)} | новая свеча через {mm(rem)}"
+            self.timer.color = COLORS["call"] if age < 0.4 * tf else COLORS["pause"]
 
     def _on_ref(self, _w, ref):
         """Нажатие на пару в списке сканера открывает подробное объяснение сигнала."""
@@ -1223,10 +1301,21 @@ class Root(BoxLayout):
             return
         for sym, res, _err in self._list_results:
             if sym == ref and res:
-                self.show(sym, self._list_itv, res, None, back=True)
+                self.show(sym, self._list_itv, res, None, back=True, ts=getattr(self, "_list_ts", None))
                 return
 
-    def show(self, sym, itv, res, err, back=False):
+    def risk_cfg(self):
+        self.save_settings()
+        return risk.config(self.s.get("risk"))
+
+    def stake_line(self):
+        cfg = self.risk_cfg()
+        st = risk.stake(cfg) if cfg["on"] else None
+        if not st:
+            return None
+        return f"[color=00d9ff]Ставка по плану: [b]{st:.2f}[/b] ({cfg['stake_pct']:g}% от депозита {cfg['deposit']:g})[/color]"
+
+    def show(self, sym, itv, res, err, back=False, ts=None):
         if err or not res:
             self.style_signal("pause", "Нет данных")
             self.info.text = ""
@@ -1246,9 +1335,15 @@ class Root(BoxLayout):
         for p, text in res["parts"]:
             col = "33f280" if p > 0 else "ff4d6b" if p < 0 else "99aad9"
             lines.append(f"[color={col}]{p:+d}[/color]  {text}")
+        if res["kind"] in ("call", "put"):
+            self._sig = {"ts": ts or time.time(), "tf": core.TF_SECONDS.get(itv, 300)}
+            sl = self.stake_line()
+            if sl:
+                lines.insert(0, sl + "\n")
         if back:
             lines.insert(0, "[ref=__back__][color=00d9ff][b]< Назад к списку сканера[/b][/color][/ref]\n")
         self.reasons.text = "\n".join(lines)
+        self._tick_timer(0)
 
     def show_list(self, itv, results):
         self._list_itv, self._list_results = itv, results
@@ -1269,6 +1364,9 @@ class Root(BoxLayout):
                          f"{r['score']:+d} ({r['conf']}%){exp}{pay}[/color][/ref]")
         if lines:
             lines.insert(0, "[color=99aad9]Нажмите на пару, чтобы увидеть, почему такой сигнал[/color]")
+            sl = self.stake_line()
+            if sl:
+                lines.insert(1, sl)
         self.reasons.text = "\n".join(lines) or (errs[0] if errs else "Нет данных")
 
     # ───────── авто-режим ─────────
@@ -1339,6 +1437,37 @@ class Root(BoxLayout):
         if good:
             box.add_widget(wrap_label("По наборам методов и индикаторов (от 3 сделок):\n" + "\n".join(
                 f"{k}: {v[0]}/{v[1]} ({100 * v[0] / v[1]:.0f}%)" for k, v in good), 13))
+        cfg = risk.config(self.s.get("risk"))
+        rs = risk.evaluate(self.entries, time.time(), cfg)
+        today = f"Сегодня закрыто сигналов: {rs['n']}"
+        if rs["net"] is not None:
+            today += f", результат при плановой ставке: {rs['net']:+.2f}"
+        else:
+            today += f", результат в ставках: {rs['units']:+.2f}"
+        today += f", проигрышей подряд: {rs['streak']}."
+        today += " Защита: " + ("включена." if cfg["on"] else "выключена.")
+        if rs["blocked"]:
+            today += "\n[color=ffb833]" + rs["why"] + "[/color]"
+        box.add_widget(wrap_label(today, 13, markup=True))
+        if st["n"] < 10:
+            box.add_widget(wrap_label("Разбор по парам, времени и выплате появится после 10 проверенных сигналов.",
+                                      12, color=(1, 1, 1, 0.55)))
+        else:
+            box.add_widget(wrap_label("[b]Что работает[/b]. Зелёный: даже нижняя граница выше безубытка. Красный: "
+                                      "даже верхняя граница ниже безубытка. Жёлтый: пока не ясно. Пока сделок меньше "
+                                      "30, любые различия чаще всего шум.", 12, markup=True, color=(1, 1, 1, 0.7)))
+            for title, fn in self._breakdowns():
+                d = journal.breakdown(self.entries, fn)
+                if not d:
+                    continue
+                rows = sorted(d.items(), key=lambda kv: -kv[1]["rate"])[:6]
+                out = [f"[b]{title}[/b]"]
+                for k, v in rows:
+                    lo, hi = v["rate"] - v["margin"], v["rate"] + v["margin"]
+                    col = "33f280" if lo > v["be"] else "ff4d6b" if hi < v["be"] else "ffb833"
+                    out.append(f"[color={col}]{k}: {v['w']}/{v['n']} = {v['rate']:.0f}% (±{v['margin']:.0f}, "
+                               f"безубыток {v['be']:.0f}%)[/color]")
+                box.add_widget(wrap_label("\n".join(out), 13, markup=True))
         box.add_widget(wrap_label("Цена на момент экспирации берётся у источника котировок и может слегка "
                                   "отличаться от брокера. Это приблизительная статистика, а не результат реальных сделок.",
                                   12, color=(1, 1, 1, 0.5)))
@@ -1349,6 +1478,10 @@ class Root(BoxLayout):
             d_ = "CALL" if e["dir"] == "call" else "PUT"
             lines.append(f"{t}  {e['sym']} {e['itv']}  {d_}  {e['exp']}м  [color={col}]{name}[/color]")
         box.add_widget(wrap_label("\n".join(lines) or "Пока нет сигналов", 13, markup=True))
+        csv_btn = GlowButton(text="Скопировать журнал (CSV)", font=13, size_hint_y=None, height=dp(40),
+                             radius=dp(12), glow_color=list(CYAN), glow_a=0.45, fill=[0.0, 0.2, 0.26, 0.9])
+        csv_btn.bind(on_release=lambda b: self._copy_csv(b))
+        box.add_widget(csv_btn)
         clear = GlowButton(text="Очистить журнал", font=13, size_hint_y=None, height=dp(40), radius=dp(12),
                            glow_color=list(COLORS["put"]), glow_a=0.45, fill=[0.3, 0.05, 0.1, 0.9])
         clear.bind(on_release=lambda *_: self._clear_journal(pop))
@@ -1358,6 +1491,32 @@ class Root(BoxLayout):
         pop = Popup(title="Журнал сигналов", content=sv, size_hint=(0.96, 0.92), background="",
                     background_color=(0.04, 0.05, 0.12, 1), separator_color=COLORS["call"])
         pop.open()
+
+    @staticmethod
+    def _breakdowns():
+        def hour(e):
+            h = time.localtime(e["ts"]).tm_hour // 3 * 3
+            return f"{h:02d}-{h + 3:02d} ч"
+
+        def pay(e):
+            p = e.get("pay")
+            return "неизвестна" if not p else "90% и выше" if p >= 0.9 else "80-89%" if p >= 0.8 else "ниже 80%"
+        return [("По парам", lambda e: e["sym"]), ("По времени суток (местное)", hour),
+                ("По времени экспирации", lambda e: f"{e['exp']} мин"), ("По таймфрейму", lambda e: e["itv"]),
+                ("По выплате брокера", pay)]
+
+    def _copy_csv(self, btn):
+        rows = ["время;пара;таймфрейм;направление;экспирация_мин;вход;выход;статус;балл;уверенность;выплата;методы;индикаторы"]
+        for e in self.entries:
+            rows.append(";".join(str(x) for x in (
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(e["ts"])), e["sym"], e["itv"], e["dir"], e["exp"],
+                e["entry"], e.get("exit") or "", e["status"], e["score"], e["conf"], e.get("pay") or "",
+                "+".join(e["methods"]), "+".join(e.get("ind", [])))))
+        try:
+            Clipboard.copy("\n".join(rows))
+            btn.text = f"Скопировано строк: {len(self.entries)}. Вставьте в заметки или таблицу"
+        except Exception:
+            btn.text = "Не удалось скопировать"
 
     def _clear_journal(self, pop):
         self.entries = []

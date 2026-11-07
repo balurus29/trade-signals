@@ -31,9 +31,9 @@ def is_new(last, sym, kind, now, exp_min):
     return True
 
 
-def new_entry(sym, itv, res, methods, now=None, indicators=None):
+def new_entry(sym, itv, res, methods, now=None, indicators=None, payout=None):
     now = now or time.time()
-    return {"id": f"{int(now * 1000)}-{sym}", "sym": sym, "itv": itv, "dir": res["kind"],
+    return {"pay": round(payout / 100, 4) if payout else None, "id": f"{int(now * 1000)}-{sym}", "sym": sym, "itv": itv, "dir": res["kind"],
             "entry": res["price"], "ts": now, "exp": res.get("exp_min", 5), "score": res["score"],
             "conf": res["conf"], "methods": sorted(methods), "ind": sorted(indicators or []),
             "status": "pending", "exit": None}
@@ -91,3 +91,27 @@ def stats(entries, names=None):
     s["n"] = n
     s["by_dir"], s["by_methods"] = by_dir, by_methods
     return s
+
+
+def breakdown(entries, keyfn, min_n=3):
+    """Разбор по произвольному признаку: ключ -> победы, сделки, процент, погрешность, безубыток."""
+    d = {}
+    for e in entries:
+        if e["status"] not in ("win", "loss"):
+            continue
+        k = keyfn(e)
+        if k is None:
+            continue
+        r = d.setdefault(k, {"w": 0, "n": 0, "pay": 0.0})
+        r["n"] += 1
+        r["w"] += 1 if e["status"] == "win" else 0
+        r["pay"] += e.get("pay") or 0.85
+    out = {}
+    for k, r in d.items():
+        if r["n"] < min_n:
+            continue
+        p = r["w"] / r["n"]
+        out[k] = {"w": r["w"], "n": r["n"], "rate": 100 * p,
+                  "margin": 196 * (p * (1 - p) / r["n"]) ** 0.5,      # 95% интервал, в п.п.
+                  "be": 100 / (1 + r["pay"] / r["n"])}
+    return out
