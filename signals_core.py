@@ -790,6 +790,20 @@ def chart_data(d, hi, lo, n=60):
             "lp": [(i - s, float(d["l"][i])) for i in lo if i >= s]}
 
 
+def preview(sym, interval):
+    """Лёгкая загрузка для графика сразу после выбора пары (без анализа и фильтров)."""
+    d = fetch(sym, interval)
+    if len(d["c"]) < 20:
+        raise RuntimeError("Недостаточно свечей для графика")
+    hi, lo = pivots(d)
+    try:
+        ch = chart_data(d, hi, lo)
+    except Exception:
+        ch = {"o": d["o"][-60:].tolist(), "h": d["h"][-60:].tolist(), "l": d["l"][-60:].tolist(),
+              "c": d["c"][-60:].tolist(), "levels": [], "hp": [], "lp": []}
+    return {"chart": ch, "price": float(d["c"][-1])}
+
+
 def analyze(d, threshold=35, blackout=None, methods=None, weights=None, indicators=None):
     """methods: набор ключей из METHODS (None = все); weights: множители методов;
     indicators: ключи из INDICATORS для метода «Технический» (None = набор по умолчанию).

@@ -13,6 +13,7 @@ from kivy.metrics import dp, sp
 from kivy.properties import BooleanProperty, ListProperty, NumericProperty, ObjectProperty, StringProperty
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
@@ -30,13 +31,15 @@ COLORS = {"call": (0.2, 0.95, 0.5, 1), "put": (1.0, 0.3, 0.42, 1),
           "wait": (0.6, 0.68, 0.85, 1), "pause": (1.0, 0.72, 0.2, 1)}
 HEX = {"call": "33f280", "put": "ff4d6b", "wait": "99aad9", "pause": "ffb833"}
 FAV = "Избранное"
+SCAN_SCOPES = ("Текущая группа", "Все OTC", "Избранное", "Выбранные вручную")
 STATUS_RU = {"win": ("плюс", "33f280"), "loss": ("минус", "ff4d6b"), "draw": ("ничья", "99aad9"),
              "stale": ("не проверен", "ffb833"), "pending": ("ждёт", "99aad9")}
 
 DEFAULTS = {"methods": list(core.ALL_METHODS), "weights": {}, "thr": 35, "blackout": "", "mtf": True,
             "vol": True, "session": True, "notify": True, "sound": True, "favs": [],
             "group": "", "pair": "", "interval": "5m", "custom": "",
-            "indicators": list(core.DEFAULT_INDICATORS), "mg": {}}
+            "indicators": list(core.DEFAULT_INDICATORS), "mg": {}, "mg2": {},
+            "scan": {"scope": "Текущая группа", "picked": [], "pmin": "", "pmax": ""}}
 
 
 def gradient_texture():
@@ -175,27 +178,30 @@ def payout_color(v):
     return "33f280" if v >= 90 else "00d9ff" if v >= 80 else "ffb833" if v >= 70 else "ff4d6b"
 
 
-class NeonOption(ButtonBehavior, Label):
-    """Строка списка выбора: тёмная плашка, цветная метка слева, выплата справа."""
+class NeonOption(ButtonBehavior, BoxLayout):
+    """Строка списка: название слева, выплата справа, подсветка выбранной. Раскладка через BoxLayout."""
     selected = BooleanProperty(False)
 
     def __init__(self, value, accent=CYAN, **kw):
-        super().__init__(text=value, halign="left", valign="middle", font_size=sp(15), shorten=True,
-                         shorten_from="right", max_lines=1, size_hint_y=None, height=dp(50), **kw)
+        super().__init__(orientation="horizontal", size_hint_y=None, height=dp(50),
+                         padding=[dp(18), 0, dp(14), 0], spacing=dp(6), **kw)
+        self.value = value
         self.accent = accent
-        self.pay = Label(markup=True, font_size=sp(14), bold=True, halign="right", valign="middle",
-                         size_hint=(None, None), size=(dp(64), dp(50)))
+        self.name = Label(text=value, font_size=sp(15), halign="left", valign="middle", shorten=True,
+                          shorten_from="right")
+        self.name.bind(size=lambda w, v: setattr(w, "text_size", v))
         v = core.PAYOUTS.get(value)
-        self.pay.text = f"[color={payout_color(v)}]{v}%[/color]" if v else ""
+        self.pay = Label(text=f"[color={payout_color(v)}]{v}%[/color]" if v else "", markup=True,
+                         font_size=sp(15), bold=True, halign="right", valign="middle",
+                         size_hint_x=None, width=dp(62))
+        self.pay.bind(size=lambda w, val: setattr(w, "text_size", val))
+        self.add_widget(self.name)
         self.add_widget(self.pay)
         self.bind(pos=self._draw, size=self._draw, state=self._draw, selected=self._draw)
         self._draw()
 
     def _draw(self, *_):
         a = self.accent
-        self.pay.pos = (self.right - dp(76), self.y)
-        self.text_size = (max(dp(20), self.width - dp(100 if self.pay.text else 36)), self.height)
-        self.padding = (dp(18), 0)
         self.canvas.before.clear()
         with self.canvas.before:
             Color(a[0], a[1], a[2], 0.38 if self.state == "down" else 0.22 if self.selected else 0.0)
@@ -205,8 +211,9 @@ class NeonOption(ButtonBehavior, Label):
             if self.selected:
                 Color(a[0], a[1], a[2], 1)
                 Rectangle(pos=(self.x, self.y + dp(8)), size=(dp(4), self.height - dp(16)))
-        self.color = (1, 1, 1, 1) if self.selected or self.state == "down" else (0.86, 0.9, 1, 1)
-        self.bold = self.selected
+        on = self.selected or self.state == "down"
+        self.name.color = (1, 1, 1, 1) if on else (0.86, 0.9, 1, 1)
+        self.name.bold = bool(self.selected)
 
 
 class NeonSpinner(ButtonBehavior, Label):
@@ -218,14 +225,34 @@ class NeonSpinner(ButtonBehavior, Label):
 
     def __init__(self, glow=CYAN, **kw):
         kw.pop("drop_min", None)
-        super().__init__(bold=True, color=(1, 1, 1, 1), **kw)
+        super().__init__(bold=True, color=(1, 1, 1, 1), halign="center", valign="middle", **kw)
         self.glow = list(glow)
         self.tag = Label(markup=True, font_size=sp(13), bold=True, halign="right", valign="middle",
                          size_hint=(None, None), size=(dp(54), dp(30)))
         self.add_widget(self.tag)
         self.bind(pos=self._redraw, size=self._redraw, state=self._redraw, glow=self._redraw,
-                  right_text=lambda *_: setattr(self.tag, "text", self.right_text))
+                  right_text=self._on_tag)
+        self.bind(text=self._fit, size=self._fit, right_text=self._fit)
         self._redraw()
+        self._fit()
+
+    def _on_tag(self, *_):
+        self.tag.text = self.right_text
+
+    def _fit(self, *_):
+        """Подбирает размер шрифта: длинное название сначала уменьшается, потом переносится на 2 строки."""
+        tag = bool(self.right_text)
+        pad_l, pad_r = (dp(16), dp(70)) if tag else (dp(28), dp(28))
+        avail = max(dp(30), self.width - pad_l - pad_r)
+        n = max(1, len(self.text))
+        fs = min(sp(15), avail / (0.6 * n))
+        self.padding = (pad_l, 0, pad_r, 0)
+        self.halign = "left" if tag else "center"
+        if fs >= sp(12):
+            self.font_size, self.max_lines = fs, 1
+        else:
+            self.font_size, self.max_lines = sp(12), 2
+        self.text_size = (self.width, self.height)
 
     def on_release(self):
         vals = list(self.values)
@@ -238,7 +265,7 @@ class NeonSpinner(ButtonBehavior, Label):
         for v in vals:
             o = NeonOption(v, accent=self.glow)
             o.selected = (v == self.text)
-            o.bind(on_release=lambda w, v=v: (setattr(self, "text", v), pop.dismiss()))
+            o.bind(on_release=lambda w: (setattr(self, "text", w.value), pop.dismiss()))
             box.add_widget(o)
         sv = ScrollView()
         sv.add_widget(box)
@@ -325,10 +352,10 @@ class Root(BoxLayout):
 
         # ── пара ──
         row0 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
-        self.group = styled_spinner(glow=VIOLET, title="Группа инструментов", text="", values=[], size_hint_x=0.42)
+        self.group = styled_spinner(glow=VIOLET, title="Группа инструментов", text="", values=[], size_hint_x=0.46)
         self.pair = styled_spinner(glow=CYAN, title="Пара (справа выплата)", text="", values=[])
         self.group.bind(text=self.on_group)
-        self.pair.bind(text=lambda *_: (self.update_fav_btn(), self.update_payout()))
+        self.pair.bind(text=lambda *_: (self.update_fav_btn(), self.update_payout(), self.schedule_preview()))
         row0.add_widget(self.group)
         row0.add_widget(self.pair)
 
@@ -362,7 +389,7 @@ class Root(BoxLayout):
         self.btn = GlowButton(text="Анализ", glow_color=list(CYAN), glow_a=0.6, fill=[0.0, 0.25, 0.32, 0.9])
         self.btn.bind(on_release=lambda *_: self.run())
         self.scan_btn = GlowButton(text="Сканер", glow_color=list(VIOLET), glow_a=0.6, fill=[0.2, 0.1, 0.36, 0.9])
-        self.scan_btn.bind(on_release=lambda *_: self.scan())
+        self.scan_btn.bind(on_release=lambda *_: self.open_scan())
         self.auto = GlowButton(text="Авто", toggle=True, size_hint_x=0.4, glow_color=list(COLORS["call"]),
                                glow_a=0.35, fill=[0.05, 0.2, 0.12, 0.9])
         self.auto.bind(active=self.on_auto)
@@ -370,12 +397,12 @@ class Root(BoxLayout):
             row3.add_widget(b)
 
         # ── карточка сигнала ──
-        self.card = GlowBox(orientation="vertical", size_hint_y=None, height=dp(100), padding=dp(6),
+        self.card = GlowBox(orientation="vertical", size_hint_y=None, height=dp(122), padding=dp(6),
                             radius=dp(20))
         self.signal = Label(text="Выберите пару и нажмите «Анализ»", font_size=sp(21), bold=True,
                             halign="center", valign="middle")
         self.signal.bind(size=lambda w, v: setattr(w, "text_size", v))
-        self.info = Label(text="", font_size=sp(12), color=(1, 1, 1, 0.78), size_hint_y=None, height=dp(34),
+        self.info = Label(text="", font_size=sp(12), color=(1, 1, 1, 0.78), size_hint_y=None, height=dp(56),
                           halign="center", valign="top")
         self.info.bind(size=lambda w, v: setattr(w, "text_size", v))
         self.card.add_widget(self.signal)
@@ -408,7 +435,7 @@ class Root(BoxLayout):
         self.update_journal_btn()
         self._tick_ev = Clock.schedule_interval(self._tick, 15)
         Clock.schedule_once(self.refresh_payouts, 3)
-        Clock.schedule_interval(self.refresh_payouts, 1800)
+        Clock.schedule_interval(self.refresh_payouts, 60)   # выплаты Pocket Option меняются часто
 
     # ───────── хранение ─────────
     def _read_json(self, name, default):
@@ -464,7 +491,7 @@ class Root(BoxLayout):
 
         box.add_widget(wrap_label("Свой тикер (например EURUSD_otc или #AAPL_otc)", 13))
         self.custom = styled_input(text=s["custom"], hint_text="Необязательно")
-        self.custom.bind(text=self.update_payout)
+        self.custom.bind(text=lambda *_: (self.update_payout(), self.schedule_preview()))
         row(self.custom)
 
         box.add_widget(wrap_label("Ключ OTCharts (хранится только на телефоне)", 13))
@@ -534,7 +561,8 @@ class Root(BoxLayout):
         self.advice = wrap_label("", 13, markup=True)
         box.add_widget(self.advice)
         box.add_widget(wrap_label("Готовые сочетания. Это общие правила технического анализа, на истории они "
-                                  "не проверены. Нажмите, чтобы применить:", 12, color=(1, 1, 1, 0.6)))
+                                  "не проверены. Можно включать несколько наборов: индикаторы объединяются. Повторное нажатие "
+                                  "отключает набор (общие с другими включёнными наборами остаются):", 12, color=(1, 1, 1, 0.6)))
         self.preset_btns = {}
         for p in core.PRESETS:
             btn = GlowButton(text=p["name"], font=14, size_hint_y=None, height=dp(42), radius=dp(12),
@@ -574,14 +602,17 @@ class Root(BoxLayout):
     def open_indicators(self):
         self.ind_popup.open()
 
-    def _mark_presets(self):
-        """Подсвечивает набор, который сейчас полностью совпадает с выбором индикаторов и методов."""
+    def _preset_on(self, p):
+        """Набор включён, если все его индикаторы и методы уже выбраны."""
         ind = set(self.s["indicators"])
-        meth = {k for k, b in self.chips.items() if b.active and k != "news"}
+        meth = {k for k, b in self.chips.items() if b.active}
+        return set(p["ind"]) <= ind and (set(p["methods"]) - {"news"}) <= meth
+
+    def _mark_presets(self):
         for p in core.PRESETS:
             btn = self.preset_btns[p["name"]]
-            on = ind == set(p["ind"]) and meth == set(p["methods"]) - {"news"}
-            btn.text = p["name"] + ("  (выбран)" if on else "")
+            on = self._preset_on(p)
+            btn.text = p["name"] + ("  (включён)" if on else "")
             btn.glow_a = 1.0 if on else 0.35
             btn.fill = [0.46, 0.22, 0.88, 0.95] if on else [0.12, 0.07, 0.22, 0.9]
             btn.label.color = (1, 1, 1, 1) if on else (0.78, 0.74, 0.92, 1)
@@ -594,17 +625,103 @@ class Root(BoxLayout):
         self.advice.text = f"[b]Выбрано индикаторов: {len(self.s['indicators'])}[/b]\n" + "\n".join(lines)
 
     def apply_preset(self, p):
-        for k, btn in self.ind_btns.items():
-            btn.active = k in p["ind"]
-        for k, btn in self.chips.items():
-            if k != "news":
-                btn.active = k in p["methods"]
+        """Наборы можно включать по несколько: индикаторы и методы объединяются."""
+        if self._preset_on(p):
+            others = [q for q in core.PRESETS if q is not p and self._preset_on(q)]
+            keep_i = set().union(*[set(q["ind"]) for q in others]) if others else set()
+            keep_m = set().union(*[set(q["methods"]) for q in others]) if others else set()
+            for k, btn in self.ind_btns.items():
+                if k in p["ind"] and k not in keep_i:
+                    btn.active = False
+            for k, btn in self.chips.items():
+                if k in p["methods"] and k not in keep_m and k != "news":
+                    btn.active = False
+            if not any(b.active for b in self.chips.values()):
+                self.chips["tech"].active = True
+            note = f"Набор «{p['name']}» отключён"
+        else:
+            for k in p["ind"]:
+                self.ind_btns[k].active = True
+            for k in p["methods"]:
+                if k != "news":
+                    self.chips[k].active = True
+            note = f"Набор «{p['name']}» добавлен"
         self._on_ind_change()
-        self.advice.text = f"[b]Применён набор «{p['name']}»[/b]\n" + self.advice.text
+        self.advice.text = f"[b]{note}[/b]\n" + self.advice.text
         self.save_settings()
 
     # ───────── калькулятор мартингейла ─────────
     def open_martingale(self):
+        """Простой калькулятор: ставка, доходность, длина серии -> таблица ставок."""
+        m = {"first": "10", "payout": "80", "steps": "7"}
+        m.update(self.s.get("mg2", {}))
+        v = core.PAYOUTS.get(self.current_symbol())
+        if v:
+            m["payout"] = str(v)
+        box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8), padding=dp(8))
+        box.bind(minimum_height=box.setter("height"))
+        self.m2_in = {}
+
+        def field(key, label):
+            lab = wrap_label(label, 14, color=(1, 1, 1, 0.8))
+            ti = styled_input(text=str(m[key]), input_filter="float", size_hint_y=None, height=dp(46))
+            ti.bind(text=lambda *_: self._m2_calc())
+            box.add_widget(lab)
+            box.add_widget(ti)
+            self.m2_in[key] = ti
+        field("first", "Ставка (первая)")
+        field("payout", "Доходность, % (например 80)")
+        field("steps", "Максимальная убыточная серия")
+        self.m2_grid = GridLayout(cols=3, size_hint_y=None, row_default_height=dp(36), row_force_default=True,
+                                  spacing=dp(2))
+        self.m2_grid.bind(minimum_height=self.m2_grid.setter("height"))
+        box.add_widget(self.m2_grid)
+        self.m2_sum = wrap_label("", 13, markup=True)
+        box.add_widget(self.m2_sum)
+        full = GlowButton(text="Подробный расчёт: шансы, депозит", font=14, size_hint_y=None, height=dp(46),
+                          radius=dp(12), glow_color=list(COLORS["put"]), glow_a=0.6, fill=[0.3, 0.05, 0.1, 0.9])
+        full.bind(on_release=lambda *_: (self.m2_pop.dismiss(), self.open_martingale_full()))
+        box.add_widget(full)
+        sv = ScrollView()
+        sv.add_widget(box)
+        pop = Popup(title="Калькулятор мартингейла", content=sv, size_hint=(0.96, 0.92), background="",
+                    background_color=(0.04, 0.05, 0.12, 1), separator_color=COLORS["put"])
+        pop.bind(on_dismiss=lambda *_: self._m2_save())
+        self.m2_pop = pop
+        self._m2_calc()
+        pop.open()
+
+    def _m2_save(self):
+        self.s["mg2"] = {k: ti.text for k, ti in self.m2_in.items()}
+        self.save_settings()
+
+    def _m2_calc(self, *_):
+        first, pay, steps = (self._num(self.m2_in[k].text) for k in ("first", "payout", "steps"))
+        g = self.m2_grid
+        g.clear_widgets()
+        if None in (first, pay, steps) or not (first > 0 and 1 <= pay <= 300 and 1 <= steps <= 15):
+            self.m2_sum.text = "Введите ставку больше 0, доходность 1-300% и серию от 1 до 15."
+            return
+        steps = int(steps)
+        p = martingale.plan(1e12, first, pay / 100, steps, "recover")
+
+        def cell(text, bold=False, col=(1, 1, 1, 0.9)):
+            g.add_widget(Label(text=text, bold=bold, color=col, font_size=sp(14)))
+        for h in ("Ступень", "Ставка", "Всего вложено"):
+            cell(h, True, (0, 0.85, 1, 1))
+        for r in p["rows"]:
+            cell(str(r["k"]))
+            cell(f"{r['stake']:.2f}")
+            cell(f"{r['total']:.2f}")
+        last = p["rows"][-1]
+        self.m2_sum.text = (f"Чтобы выдержать {steps} проигрышей подряд, нужно иметь на счёте "
+                            f"[b]{last['total']:.2f}[/b].\nВыигрыш на любой ступени возвращает все потери и "
+                            f"даёт чистую прибыль [b]{first * pay / 100:.2f}[/b].\n"
+                            f"[color=99aad9]Мартингейл не создаёт преимущества: если процент выигрышей ниже "
+                            f"{100 / (1 + pay / 100):.1f}%, ставки убыточны в среднем, а серия проигрышей "
+                            f"съедает депозит целиком.[/color]")
+
+    def open_martingale_full(self):
         mg = {"deposit": "1000", "first": "10", "payout": "85", "steps": "5", "mult": "2.2", "winrate": "",
               "mode": "Возместить убыток"}
         mg.update(self.s.get("mg", {}))
@@ -817,7 +934,43 @@ class Root(BoxLayout):
         for b in self.chips.values():
             b.active = True
 
+    def schedule_preview(self, *_):
+        ev = getattr(self, "_pv_ev", None)
+        if ev:
+            ev.cancel()
+        self._pv_ev = Clock.schedule_once(self._start_preview, 0.5)
+
+    def _start_preview(self, *_):
+        sym = self.current_symbol()
+        if not sym or self._busy:
+            return
+        itv = self.interval.text
+        self._pv_id = getattr(self, "_pv_id", 0) + 1
+        pid = self._pv_id
+
+        def work():
+            try:
+                r, err = core.preview(sym, itv), None
+            except Exception as e:
+                r, err = None, str(e)
+            Clock.schedule_once(lambda dt: self._preview_done(pid, sym, itv, r, err))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _preview_done(self, pid, sym, itv, r, err):
+        if pid != getattr(self, "_pv_id", 0) or self._busy:
+            return
+        if err or not r:
+            self.chart.data = None
+            self.info.text = (err or "Нет данных")[:120]
+            return
+        self.style_signal("wait", "Нажмите «Анализ»")
+        v = core.PAYOUTS.get(sym)
+        self.info.text = f"{sym.upper()} {itv} | цена {r['price']:.5g}" + (f"\nВыплата {v}%" if v else "")
+        self.chart.data = r["chart"]
+        self.reasons.text = ""
+
     def on_interval(self, *_):
+        self.schedule_preview()
         self.save_settings()
         if self.auto.active:
             self.on_auto(None, True)
@@ -854,16 +1007,147 @@ class Root(BoxLayout):
             return
         self._launch([sym], notify=False)
 
-    def scan(self):
-        g = self.group.text
-        if g == FAV:
+    # ───────── сканер: выбор пар и фильтр по выплате ─────────
+    @staticmethod
+    def _num(text):
+        try:
+            return float(str(text).replace(",", ".").strip())
+        except ValueError:
+            return None
+
+    def scan_pairs(self):
+        sc = self.s["scan"]
+        scope = sc.get("scope", SCAN_SCOPES[0])
+        if scope == "Все OTC":
+            pairs = list(core.OTC_ALL)
+        elif scope == "Избранное":
             pairs = list(self.s["favs"])
-        elif g.startswith("Форекс"):
-            pairs = core.FOREX_ALL
+        elif scope == "Выбранные вручную":
+            pairs = list(sc.get("picked", []))
         else:
-            pairs = list(core.GROUPS.get(g, []))
+            g = self.group.text
+            if g == FAV:
+                pairs = list(self.s["favs"])
+            elif g.startswith("Форекс"):
+                pairs = list(core.FOREX_ALL)
+            else:
+                pairs = list(core.GROUPS.get(g, []))
+        lo, hi = self._num(sc.get("pmin", "")), self._num(sc.get("pmax", ""))
+        if lo is not None or hi is not None:
+            keep = []
+            for p in pairs:
+                v = core.PAYOUTS.get(p)
+                if v is None or (lo is not None and v < lo) or (hi is not None and v > hi):
+                    continue
+                keep.append(p)
+            pairs = keep
+        return pairs
+
+    def open_scan(self):
+        sc = self.s["scan"]
+        box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(10), padding=dp(10))
+        box.bind(minimum_height=box.setter("height"))
+        box.add_widget(wrap_label("[b]Какие пары сканировать[/b]", 15, color=VIOLET, markup=True))
+        self.sc_scope = styled_spinner(glow=VIOLET, title="Какие пары сканировать", text=sc["scope"],
+                                       values=SCAN_SCOPES, size_hint_y=None, height=dp(46))
+        box.add_widget(self.sc_scope)
+        self.sc_pick = GlowButton(text="", font=14, size_hint_y=None, height=dp(44), radius=dp(12),
+                                  glow_color=list(CYAN), glow_a=0.5, fill=[0.0, 0.2, 0.26, 0.9])
+        self.sc_pick.bind(on_release=lambda *_: self.open_pick())
+        box.add_widget(self.sc_pick)
+        box.add_widget(wrap_label("[b]Фильтр по выплате Pocket Option[/b]", 15, color=CYAN, markup=True))
+        row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+        self.sc_min = styled_input(text=str(sc.get("pmin", "")), hint_text="от, %", input_filter="float")
+        self.sc_max = styled_input(text=str(sc.get("pmax", "")), hint_text="до, %", input_filter="float")
+        row.add_widget(self.sc_min)
+        row.add_widget(self.sc_max)
+        box.add_widget(row)
+        box.add_widget(wrap_label("Оставьте пустым, чтобы не фильтровать. Чтобы взять пары ровно с выплатой 92%, "
+                                  "впишите 92 в оба поля. Выплаты есть только у OTC-пар.",
+                                  12, color=(1, 1, 1, 0.6)))
+        self.sc_info = wrap_label("", 13, markup=True)
+        box.add_widget(self.sc_info)
+        go = GlowButton(text="Запустить сканер", font=17, size_hint_y=None, height=dp(52), radius=dp(14),
+                        glow_color=list(VIOLET), glow_a=0.7, fill=[0.3, 0.14, 0.5, 0.95])
+        box.add_widget(go)
+        sv = ScrollView()
+        sv.add_widget(box)
+        pop = Popup(title="Сканер", content=sv, size_hint=(0.96, 0.86), background="",
+                    background_color=(0.04, 0.05, 0.12, 1), separator_color=VIOLET)
+        self.sc_pop = pop
+        for w in (self.sc_scope, self.sc_min, self.sc_max):
+            w.bind(text=self._sc_update)
+        go.bind(on_release=lambda *_: self.start_scan())
+        self._sc_update()
+        pop.open()
+
+    def _sc_update(self, *_):
+        sc = self.s["scan"]
+        sc["scope"] = self.sc_scope.text
+        sc["pmin"], sc["pmax"] = self.sc_min.text, self.sc_max.text
+        self.sc_pick.text = f"Выбрать пары вручную (отмечено: {len(sc.get('picked', []))})"
+        pairs = self.scan_pairs()
+        n = len(pairs)
+        k = 2 if self.s["mtf"] else 1
+        txt = f"Подойдёт пар: [b]{n}[/b]. Запросов к OTCharts примерно от {n} до {n * k} (лимит Lite 7000 в сутки)."
+        pays = [core.PAYOUTS[p] for p in core.OTC_ALL if p in core.PAYOUTS]
+        if pays:
+            txt += f"\nСейчас у OTC-пар выплата от {min(pays)}% до {max(pays)}%."
+        if n == 0:
+            txt += "\n[color=ffb833]Нет пар с такими условиями.[/color]"
+        self.sc_info.text = txt
+        self.save_settings()
+
+    def open_pick(self):
+        sc = self.s["scan"]
+        vals = list(self.pair.values)
+        if not vals:
+            return
+        picked = set(sc.get("picked", []))
+        outer = BoxLayout(orientation="vertical", spacing=dp(8))
+        box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=0)
+        box.bind(minimum_height=box.setter("height"))
+        rows = []
+        for v in vals:
+            o = NeonOption(v, accent=VIOLET)
+            o.selected = v in picked
+            o.bind(on_release=lambda w: setattr(w, "selected", not w.selected))
+            rows.append(o)
+            box.add_widget(o)
+        sv = ScrollView()
+        sv.add_widget(box)
+        outer.add_widget(wrap_label("Отметьте пары из текущей группы. Пары из других групп, отмеченные раньше, "
+                                    "сохраняются.", 12, color=(1, 1, 1, 0.6)))
+        outer.add_widget(sv)
+        btns = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+
+        def mk(text, cb, col):
+            b = GlowButton(text=text, font=14, radius=dp(12), glow_color=list(col), glow_a=0.6,
+                           fill=[col[0] * 0.2, col[1] * 0.2, col[2] * 0.2, 0.9])
+            b.bind(on_release=lambda *_: cb())
+            btns.add_widget(b)
+        mk("Все", lambda: [setattr(o, "selected", True) for o in rows], CYAN)
+        mk("Снять", lambda: [setattr(o, "selected", False) for o in rows], COLORS["put"])
+        mk("Готово", lambda: done(), COLORS["call"])
+        outer.add_widget(btns)
+        pop = Popup(title="Пары для сканера", content=outer, size_hint=(0.94, 0.88), background="",
+                    background_color=(0.04, 0.05, 0.12, 1), separator_color=VIOLET)
+
+        def done():
+            new = {o.value for o in rows if o.selected}
+            sc["picked"] = sorted((picked - set(vals)) | new)
+            if sc["picked"]:
+                self.sc_scope.text = "Выбранные вручную"
+            pop.dismiss()
+            self._sc_update()
+        pop.open()
+
+    def start_scan(self):
+        pairs = self.scan_pairs()
+        self.sc_pop.dismiss()
         if not pairs:
-            self.style_signal("pause", "В группе нет пар")
+            self.style_signal("pause", "Нет подходящих пар")
+            self.info.text = "Измените выбор пар или фильтр выплаты"
             return
         self._launch(pairs, notify=False)
 
@@ -926,13 +1210,14 @@ class Root(BoxLayout):
             self.reasons.text = err or "Нет данных"
             return
         self.style_signal(res["kind"], res["signal"])
-        line = f"{sym.upper()} {itv} | цена {res['price']:.5g} | балл {res['score']:+d} (порог {res['thr']}) | {res['conf']}%"
+        lines = [f"{sym.upper()} {itv} | цена {res['price']:.5g} | балл {res['score']:+d} "
+                 f"(порог {res['thr']}) | {res['conf']}%"]
+        if res.get("exp_text"):
+            lines.append(res["exp_text"])
         v = core.PAYOUTS.get(sym)
         if v:
-            line += f" | выплата {v}% (безубыток {100 / (1 + v / 100):.1f}%)"
-        if res.get("exp_text"):
-            line += "\n" + res["exp_text"]
-        self.info.text = line
+            lines.append(f"Выплата {v}% (безубыток {100 / (1 + v / 100):.1f}%)")
+        self.info.text = "\n".join(lines)
         self.chart.data = res.get("chart")
         lines = []
         for p, text in res["parts"]:
@@ -952,8 +1237,10 @@ class Root(BoxLayout):
         lines = []
         for s, r in good:
             exp = f"  {r['exp_min']}м" if r.get("exp_min") else ""
+            pv = core.PAYOUTS.get(s)
+            pay = f"  [{pv}%]" if pv else ""
             lines.append(f"[color={HEX[r['kind']]}]{s:<10} {r['signal'].split(' ')[0]:<6} "
-                         f"{r['score']:+d} ({r['conf']}%){exp}[/color]")
+                         f"{r['score']:+d} ({r['conf']}%){exp}{pay}[/color]")
         self.reasons.text = "\n".join(lines) or (errs[0] if errs else "Нет данных")
 
     # ───────── авто-режим ─────────
