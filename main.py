@@ -178,6 +178,14 @@ def payout_color(v):
     return "33f280" if v >= 90 else "00d9ff" if v >= 80 else "ffb833" if v >= 70 else "ff4d6b"
 
 
+def by_payout(vals):
+    """Сначала пары с наибольшей выплатой, потом по алфавиту; пары без выплаты в конце."""
+    vals = list(vals)
+    if not any(v in core.PAYOUTS for v in vals):
+        return vals
+    return sorted(vals, key=lambda v: (-(core.PAYOUTS.get(v) or -1), v))
+
+
 class NeonOption(ButtonBehavior, BoxLayout):
     """Строка списка: название слева, выплата справа, подсветка выбранной. Раскладка через BoxLayout."""
     selected = BooleanProperty(False)
@@ -222,6 +230,7 @@ class NeonSpinner(ButtonBehavior, Label):
     values = ListProperty([])
     right_text = StringProperty("")
     title = StringProperty("Выбор")
+    sort_pay = BooleanProperty(False)       # показывать список по убыванию выплаты
 
     def __init__(self, glow=CYAN, **kw):
         kw.pop("drop_min", None)
@@ -242,7 +251,7 @@ class NeonSpinner(ButtonBehavior, Label):
     def _fit(self, *_):
         """Подбирает размер шрифта: длинное название сначала уменьшается, потом переносится на 2 строки."""
         tag = bool(self.right_text)
-        pad_l, pad_r = (dp(16), dp(70)) if tag else (dp(28), dp(28))
+        pad_l, pad_r = (dp(16), dp(70)) if tag else (dp(8), dp(28))   # справа место под стрелку
         avail = max(dp(30), self.width - pad_l - pad_r)
         n = max(1, len(self.text))
         fs = min(sp(15), avail / (0.6 * n))
@@ -255,7 +264,7 @@ class NeonSpinner(ButtonBehavior, Label):
         self.text_size = (self.width, self.height)
 
     def on_release(self):
-        vals = list(self.values)
+        vals = by_payout(self.values) if self.sort_pay else list(self.values)
         if not vals:
             return
         box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=0)
@@ -353,7 +362,8 @@ class Root(BoxLayout):
         # ── пара ──
         row0 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
         self.group = styled_spinner(glow=VIOLET, title="Группа инструментов", text="", values=[], size_hint_x=0.46)
-        self.pair = styled_spinner(glow=CYAN, title="Пара (справа выплата)", text="", values=[])
+        self.pair = styled_spinner(glow=CYAN, title="Пара (сверху максимальная выплата)", text="", values=[],
+                                  sort_pay=True)
         self.group.bind(text=self.on_group)
         self.pair.bind(text=lambda *_: (self.update_fav_btn(), self.update_payout(), self.schedule_preview()))
         row0.add_widget(self.group)
@@ -361,7 +371,7 @@ class Root(BoxLayout):
 
         row1 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
         self.interval = styled_spinner(glow=(1.0, 0.72, 0.2, 1), title="Время свечи", text=self.s["interval"], values=core.TF_LIST,
-                                       size_hint_x=0.22)
+                                       size_hint_x=0.27)
         self.fav_btn = GlowButton(text="В избранное", font=13, radius=dp(12), glow_color=[1.0, 0.72, 0.2, 1],
                                   glow_a=0.45, fill=[0.3, 0.2, 0.0, 0.9])
         self.fav_btn.bind(on_release=lambda *_: self.toggle_fav())
@@ -893,7 +903,7 @@ class Root(BoxLayout):
         self.on_group(None, want_g, keep=saved_pair if initial else None)
 
     def on_group(self, _w, text, keep=None):
-        vals = self.s["favs"] if text == FAV else core.GROUPS.get(text, [])
+        vals = by_payout(self.s["favs"] if text == FAV else core.GROUPS.get(text, []))
         self.pair.values = vals
         self.pair.text = keep if keep in vals else (vals[0] if vals else "")
         self.update_fav_btn()
@@ -1100,7 +1110,7 @@ class Root(BoxLayout):
 
     def open_pick(self):
         sc = self.s["scan"]
-        vals = list(self.pair.values)
+        vals = by_payout(self.pair.values)
         if not vals:
             return
         picked = set(sc.get("picked", []))
