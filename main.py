@@ -372,22 +372,20 @@ class Root(BoxLayout):
 
         row1 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
         self.interval = styled_spinner(glow=(1.0, 0.72, 0.2, 1), title="Время свечи", text=self.s["interval"], values=core.TF_LIST,
-                                       size_hint_x=None, width=dp(100))
-        self.fav_btn = GlowButton(text="В избранное", font=13, radius=dp(12), glow_color=[1.0, 0.72, 0.2, 1],
+                                       size_hint_x=None, width=dp(84))
+        self.fav_btn = GlowButton(text="☆", font=20, size_hint_x=None, width=dp(46), radius=dp(12), glow_color=[1.0, 0.72, 0.2, 1],
                                   glow_a=0.45, fill=[0.3, 0.2, 0.0, 0.9])
         self.fav_btn.bind(on_release=lambda *_: self.toggle_fav())
-        self.all_btn = GlowButton(text="Все методы", font=13, radius=dp(12), glow_color=[1, 1, 1, 1],
+        self.all_btn = GlowButton(text="Все", font=13, size_hint_x=None, width=dp(54), radius=dp(12), glow_color=[1, 1, 1, 1],
                                   glow_a=0.35, fill=[1, 1, 1, 0.12])
         self.all_btn.bind(on_release=lambda *_: self.select_all())
-        for w in (self.interval, self.fav_btn, self.all_btn):
-            row1.add_widget(w)
         self.interval.bind(text=self.on_interval)
 
-        row1b = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
         self.exp_sp = styled_spinner(glow=COLORS["call"], title="Экспирация сигнала (Авто — подбирает приложение)",
                                      text=self.exp_label(self.s.get("exp", "Авто")), values=self.EXP_VALUES)
         self.exp_sp.bind(text=lambda *_: self.on_exp())
-        row1b.add_widget(self.exp_sp)
+        for w in (self.interval, self.exp_sp, self.fav_btn, self.all_btn):
+            row1.add_widget(w)
 
         # ── методы ──
         self.chips = {}
@@ -446,7 +444,7 @@ class Root(BoxLayout):
         warn = Label(text="Не гарантия прибыли. Бинарные опционы - высокий риск.",
                      font_size=sp(11), color=(1, 1, 1, 0.45), size_hint_y=None, height=dp(18))
 
-        for w in (head, row0, row1, row1b, mrow1, mrow2, row3, self.card, cbox, panel, warn):
+        for w in (head, row0, row1, mrow1, mrow2, row3, self.card, cbox, panel, warn):
             self.add_widget(w)
 
         self._build_settings()
@@ -989,7 +987,7 @@ class Root(BoxLayout):
         self.pair.right_text = f"[color={payout_color(v)}]{v}%[/color]" if v else ""
 
     def update_fav_btn(self, *_):
-        self.fav_btn.text = "Убрать из избр." if self.pair.text in self.s["favs"] else "В избранное"
+        self.fav_btn.text = "★" if self.pair.text in self.s["favs"] else "☆"
 
     def toggle_fav(self):
         sym = self.current_symbol()
@@ -1075,19 +1073,19 @@ class Root(BoxLayout):
             self.card.glow_a = 0.45
 
     # ───────── запуск анализа ─────────
-    EXP_VALUES = ["Экспирация: " + x for x in ("Авто", "1 мин", "2 мин", "3 мин", "5 мин", "10 мин", "15 мин", "30 мин", "60 мин")]
+    EXP_VALUES = ["Эксп: " + x for x in ("Авто", "1 мин", "2 мин", "3 мин", "5 мин", "10 мин", "15 мин", "30 мин", "60 мин")]
 
     @staticmethod
     def exp_label(v):
-        v = str(v).replace("Экспирация:", "").strip() or "Авто"
-        return "Экспирация: " + v
+        v = str(v).replace("Эксп:", "").replace("Экспирация:", "").strip() or "Авто"
+        return "Эксп: " + v
 
     def on_exp(self):
-        self.s["exp"] = self.exp_sp.text.replace("Экспирация:", "").strip()
+        self.s["exp"] = self.exp_sp.text.replace("Эксп:", "").replace("Экспирация:", "").strip()
         self.save_settings()
 
     def exp_minutes(self):
-        t = str(self.s.get("exp", "Авто")).replace("Экспирация:", "").strip()
+        t = str(self.s.get("exp", "Авто")).replace("Эксп:", "").replace("Экспирация:", "").strip()
         try:
             return int(t.split()[0])
         except (ValueError, IndexError):
