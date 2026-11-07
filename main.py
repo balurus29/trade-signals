@@ -371,7 +371,7 @@ class Root(BoxLayout):
 
         row1 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
         self.interval = styled_spinner(glow=(1.0, 0.72, 0.2, 1), title="Время свечи", text=self.s["interval"], values=core.TF_LIST,
-                                       size_hint_x=0.27)
+                                       size_hint_x=None, width=dp(100))
         self.fav_btn = GlowButton(text="В избранное", font=13, radius=dp(12), glow_color=[1.0, 0.72, 0.2, 1],
                                   glow_a=0.45, fill=[0.3, 0.2, 0.0, 0.9])
         self.fav_btn.bind(on_release=lambda *_: self.toggle_fav())
@@ -427,6 +427,8 @@ class Root(BoxLayout):
 
         # ── причины ──
         self.reasons = wrap_label("", size=14, markup=True)
+        self.reasons.bind(on_ref_press=self._on_ref)
+        self._list_itv, self._list_results = None, []
         sv = ScrollView(bar_width=dp(3))
         sv.add_widget(self.reasons)
         panel = GlowBox(padding=dp(10), glow_color=[0.62, 0.36, 1.0, 1], glow_a=0.15)
@@ -1213,7 +1215,18 @@ class Root(BoxLayout):
                          f"{sym} {itv}: уверенность {res['conf']}%. {res.get('exp_text', '')}",
                          beep_path=os.path.join(self.dir, "beep.wav"), loud=self.s["sound"])
 
-    def show(self, sym, itv, res, err):
+    def _on_ref(self, _w, ref):
+        """Нажатие на пару в списке сканера открывает подробное объяснение сигнала."""
+        if ref == "__back__":
+            if self._list_results:
+                self.show_list(self._list_itv, self._list_results)
+            return
+        for sym, res, _err in self._list_results:
+            if sym == ref and res:
+                self.show(sym, self._list_itv, res, None, back=True)
+                return
+
+    def show(self, sym, itv, res, err, back=False):
         if err or not res:
             self.style_signal("pause", "Нет данных")
             self.info.text = ""
@@ -1233,9 +1246,12 @@ class Root(BoxLayout):
         for p, text in res["parts"]:
             col = "33f280" if p > 0 else "ff4d6b" if p < 0 else "99aad9"
             lines.append(f"[color={col}]{p:+d}[/color]  {text}")
+        if back:
+            lines.insert(0, "[ref=__back__][color=00d9ff][b]< Назад к списку сканера[/b][/color][/ref]\n")
         self.reasons.text = "\n".join(lines)
 
     def show_list(self, itv, results):
+        self._list_itv, self._list_results = itv, results
         good = [(s, r) for s, r, _ in results if r]
         errs = [e for _, r, e in results if not r and e]
         good.sort(key=lambda x: -abs(x[1]["score"]))
@@ -1249,8 +1265,10 @@ class Root(BoxLayout):
             exp = f"  {r['exp_min']}м" if r.get("exp_min") else ""
             pv = core.PAYOUTS.get(s)
             pay = f"  [{pv}%]" if pv else ""
-            lines.append(f"[color={HEX[r['kind']]}]{s:<10} {r['signal'].split(' ')[0]:<6} "
-                         f"{r['score']:+d} ({r['conf']}%){exp}{pay}[/color]")
+            lines.append(f"[ref={s}][color={HEX[r['kind']]}]{s:<10} {r['signal'].split(' ')[0]:<6} "
+                         f"{r['score']:+d} ({r['conf']}%){exp}{pay}[/color][/ref]")
+        if lines:
+            lines.insert(0, "[color=99aad9]Нажмите на пару, чтобы увидеть, почему такой сигнал[/color]")
         self.reasons.text = "\n".join(lines) or (errs[0] if errs else "Нет данных")
 
     # ───────── авто-режим ─────────
