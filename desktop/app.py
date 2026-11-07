@@ -53,7 +53,7 @@ def num(s):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Trade Signals")
+        self.title("Trade Signals 2.1")
         self.geometry("1560x900")
         self.minsize(1200, 700)
         self.configure(bg=BG)
@@ -248,7 +248,7 @@ class App(tk.Tk):
         self.lbl_timer.pack(pady=(4, 12))
         self.cv_box = Card(f, BORDER)
         self.cv_box.pack(fill="both", expand=True, pady=(10, 0))
-        self.cv = tk.Canvas(self.cv_box, bg=CARD, highlightthickness=0)
+        self.cv = tk.Canvas(self.cv_box, bg=CARD, highlightthickness=0, width=300, height=300)
         self.cv.pack(fill="both", expand=True, padx=2, pady=2)
         self.cv.bind("<Configure>", lambda e: self.draw())
         self.cv.bind("<Motion>", self.on_move)
@@ -287,7 +287,7 @@ class App(tk.Tk):
 
     def textbox(self, parent, font=None, height=None):
         t = tk.Text(parent, bg=CARD, fg=FG, relief="flat", wrap="word", font=font or (FONT, 11), state="disabled",
-                    highlightthickness=0, padx=10, pady=8, cursor="arrow", **({"height": height} if height else {}))
+                    highlightthickness=0, padx=10, pady=8, cursor="arrow", width=10, **({"height": height} if height else {}))
         t.pack(fill="both", expand=True)
         t.tag_configure("pos", foreground=GREEN)
         t.tag_configure("neg", foreground=RED)
@@ -396,7 +396,7 @@ class App(tk.Tk):
         for c in range(3):
             inf.columnconfigure(c, weight=1)
         self.t_adv = tk.Text(f, bg=CARD, fg=FG, relief="flat", wrap="word", font=(FONT, 10), state="disabled",
-                             highlightthickness=0, height=9, padx=10, pady=6)
+                             highlightthickness=0, height=9, width=10, padx=10, pady=6)
         self.t_adv.pack(fill="both", expand=True, pady=6)
         for tg, col in (("ok", GREEN), ("warn", AMBER), ("tip", CYAN)):
             self.t_adv.tag_configure(tg, foreground=col)

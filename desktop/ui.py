@@ -35,7 +35,7 @@ class Btn(tk.Canvas):
     def __init__(self, master, text="", command=None, accent=CYAN, width=None, height=36, toggle=False,
                  active=False, size=11, bold=True, arrow=False, bg=None):
         super().__init__(master, height=height, bg=bg or master["bg"], highlightthickness=0, bd=0,
-                         **({"width": width} if width else {}))
+                         width=width or 10)
         self.text, self.command, self.accent = text, command, accent
         self.toggle, self.active, self.arrow = toggle, active, arrow
         self.size, self.bold = size, bold
@@ -121,7 +121,7 @@ class Select(Btn):
         top.transient(self.winfo_toplevel())
         rows = min(len(self.values), 16)
         wide = max(len(str(x)) for x in self.values)
-        top.geometry(f"{max(260, wide * 10 + 70)}x{rows * 26 + 50}+{self.winfo_rootx()}+{self.winfo_rooty() + self.winfo_height()}")
+        top.geometry(f"{max(260, wide * 10 + 70)}x{rows * 30 + 80}+{self.winfo_rootx()}+{self.winfo_rooty() + self.winfo_height()}")
         lb = tk.Listbox(top, bg=PANEL, fg=FG, selectbackground=mix(PANEL, self.accent, 0.5), selectforeground=FG,
                         highlightthickness=0, bd=0, activestyle="none", font=(FONT, 11))
         sb = tk.Scrollbar(top, command=lb.yview)
