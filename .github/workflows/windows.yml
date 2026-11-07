@@ -1,0 +1,20 @@
+name: Windows exe
+on:
+  workflow_dispatch:
+  push:
+    paths: ["desktop/**", ".github/workflows/windows.yml"]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pyinstaller numpy certifi
+      - working-directory: desktop
+        run: pyinstaller --onefile --windowed --name TradeSignals --collect-data certifi app.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TradeSignals-exe
+          path: desktop/dist/TradeSignals.exe
