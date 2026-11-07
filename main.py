@@ -8,7 +8,6 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.graphics import Color, Ellipse, InstructionGroup, Line, Rectangle, RoundedRectangle
 from kivy.graphics.texture import Texture
-from kivy.core.clipboard import Clipboard
 from kivy.core.window import Window
 from kivy.metrics import dp, sp
 from kivy.properties import BooleanProperty, ListProperty, NumericProperty, ObjectProperty, StringProperty
@@ -517,10 +516,13 @@ class Root(BoxLayout):
         box.add_widget(wrap_label("Ключ OTCharts (хранится только на телефоне)", 13))
         self.key = styled_input(text=core.OTC_KEY, hint_text="API-ключ для OTC-пар", password=True)
         self.key.bind(text=self._on_key)
+        self.paste_btn = GlowButton(text="Вставить", font=13, size_hint_x=0.28, radius=dp(12),
+                                    glow_color=list(CYAN), glow_a=0.5, fill=[0.0, 0.2, 0.26, 0.9])
+        self.paste_btn.bind(on_release=lambda *_: self._paste_key())
         self.cat_btn = GlowButton(text="Список OTC", font=13, size_hint_x=0.34, radius=dp(12),
                                   glow_color=[1.0, 0.72, 0.2, 1], glow_a=0.5, fill=[0.3, 0.2, 0.0, 0.9])
         self.cat_btn.bind(on_release=lambda *_: self.load_catalog())
-        row(self.key, self.cat_btn)
+        row(self.key, self.paste_btn, self.cat_btn)
 
         box.add_widget(wrap_label("Порог сигнала и окна новостей (UTC, через запятую)", 13))
         self.thr = styled_input(text=str(s["thr"]), input_filter="int", hint_text="Порог", size_hint_x=0.25)
@@ -591,6 +593,19 @@ class Root(BoxLayout):
 
     def open_settings(self):
         self.settings_popup.open()
+
+    def _paste_key(self):
+        """Запасной способ вставки ключа: читает буфер обмена кнопкой."""
+        try:
+            from kivy.core.clipboard import Clipboard
+            text = (Clipboard.paste() or "").strip()
+        except Exception:
+            text = ""
+        if text:
+            self.key.text = text
+            self.paste_btn.text = f"Вставлено ({len(text)})"
+        else:
+            self.paste_btn.text = "Буфер пуст"
 
     def _on_key(self, _w, text):
         core.OTC_KEY = text.strip()
@@ -1513,6 +1528,7 @@ class Root(BoxLayout):
                 e["entry"], e.get("exit") or "", e["status"], e["score"], e["conf"], e.get("pay") or "",
                 "+".join(e["methods"]), "+".join(e.get("ind", [])))))
         try:
+            from kivy.core.clipboard import Clipboard      # импорт здесь: после создания окна
             Clipboard.copy("\n".join(rows))
             btn.text = f"Скопировано строк: {len(self.entries)}. Вставьте в заметки или таблицу"
         except Exception:
