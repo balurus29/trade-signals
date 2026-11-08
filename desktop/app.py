@@ -11,7 +11,7 @@ import martingale
 import risk
 import signals_core as core
 from ui import (AMBER, BG, BORDER, CARD, CYAN, DIM, FG, FIELD, FONT, GREEN, PANEL, RED, VIOLET, Btn, Card, Field,
-                Label, Select, mix)
+                Label, Select, fit_size, mix, text_w)
 
 try:
     import winsound
@@ -53,7 +53,7 @@ def num(s):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Trade Signals 2.1")
+        self.title("Trade Signals 2.2")
         self.geometry("1560x900")
         self.minsize(1200, 700)
         self.configure(bg=BG)
@@ -164,6 +164,18 @@ class App(tk.Tk):
         self.build_left(left)
         self.build_mid(mid)
         self.build_right(right)
+        self.right_w = 450
+        self.bind("<Configure>", self.on_resize)
+
+    def on_resize(self, e):
+        """В узком окне правая колонка уступает место графику (от 360 до 450 пикселей)."""
+        if e.widget is not self:
+            return
+        w = max(360, min(450, int(e.width * 0.29)))
+        if w != self.right_w:
+            self.right_w = w
+            self.columnconfigure(2, minsize=w)
+            self.lbl_preset.configure(wraplength=w - 40)
 
     def build_left(self, f):
         Label(f, "TRADE SIGNALS", CYAN, 15, True).pack(anchor="w", pady=(0, 8))
@@ -240,6 +252,7 @@ class App(tk.Tk):
     def build_mid(self, f):
         self.card = Card(f, BORDER)
         self.card.pack(fill="x")
+        self.card.bind("<Configure>", lambda e: self.fit_sig())
         self.lbl_sig = Label(self.card, "Выберите пару и нажмите «Анализ»", FG, 26, True, bg=CARD)
         self.lbl_sig.pack(pady=(14, 4))
         self.lbl_info = Label(self.card, "", mix(FG, BG, 0.2), 11, bg=CARD, justify="center")
@@ -262,7 +275,7 @@ class App(tk.Tk):
         for i, (n, col) in enumerate(names):
             b = Btn(bar, n, lambda a, n=n: self.tab(n), accent=col, toggle=True, height=34, size=10)
             b.grid(row=0, column=i, sticky="ew", padx=2)
-            bar.columnconfigure(i, weight=1)
+            bar.columnconfigure(i, weight=text_w(bar, n, 10) + 14)   # ширина вкладки по длине её названия
             self.tabbtn[n] = b
         self.body = tk.Frame(f, bg=BG)
         self.body.pack(fill="both", expand=True, pady=(8, 0))
@@ -276,6 +289,19 @@ class App(tk.Tk):
         self.page_settings(self.pages["Настройки"])
         self.tab("Причины")
         self.show_journal()
+
+    def set_sig(self, text, fg):
+        self.lbl_sig.configure(text=text, fg=fg)
+        self.fit_sig()
+
+    def fit_sig(self):
+        """Заголовок сигнала уменьшается, чтобы не обрезаться в узком окне."""
+        w = self.card.winfo_width() - 30
+        if w < 50:
+            return
+        size = fit_size(self.lbl_sig, self.lbl_sig.cget("text"), 26, True, w, low=12)
+        self.lbl_sig.configure(font=(FONT, size, "bold"))
+        self.lbl_info.configure(wraplength=w)
 
     def tab(self, name):
         for n, fr in self.pages.items():
@@ -633,7 +659,7 @@ class App(tk.Tk):
             return
         self.res = None
         self.sig_info = None
-        self.lbl_sig.configure(text=p.replace("_otc", " OTC"), fg=FG)
+        self.set_sig(p.replace("_otc", " OTC"), FG)
         pay = core.PAYOUTS.get(p)
         self.lbl_info.configure(text=f"Выплата {pay}%, безубыток {martingale.breakeven(pay / 100) * 100:.1f}%" if pay else "")
         self.lbl_timer.configure(text="")
@@ -706,7 +732,6 @@ class App(tk.Tk):
         near = sorted([x for x in ch.get("levels", []) if lo <= x <= hi], key=lambda x: abs(x - ch["c"][-1]))[:6]
         for v in near:
             c.create_line(pl, y(v), W - pr, y(v), fill=mix(CARD, AMBER, 0.55), dash=(5, 4))
-            c.create_text(pl + 4, y(v) - 7, text=fmt(v), anchor="w", fill=mix(CARD, AMBER, 0.7), font=("Consolas", 8))
         body = max(1.0, min(cw * 0.7, 14))
         for i in range(n):
             x = pl + (i + 0.5) * cw
@@ -718,6 +743,10 @@ class App(tk.Tk):
             if bot - top < 2:
                 bot = top + 2
             c.create_rectangle(x - body / 2, top, x + body / 2, bot, fill=col, outline=col)
+        for v in near:      # подписи уровней рисуем поверх свечей, на подложке
+            t = c.create_text(pl + 4, y(v) - 7, text=fmt(v), anchor="w", fill=mix(CARD, AMBER, 0.8), font=("Consolas", 8))
+            x1, y1, x2, y2 = c.bbox(t)
+            c.tag_lower(c.create_rectangle(x1 - 2, y1, x2 + 2, y2, fill=CARD, outline=""), t)
         for i, v in ch.get("hp", []):
             if 0 <= i < n and lo <= v <= hi:
                 c.create_oval(pl + (i + .5) * cw - 3, y(v) - 9, pl + (i + .5) * cw + 3, y(v) - 3, fill=CYAN, outline="")
@@ -763,7 +792,7 @@ class App(tk.Tk):
         rs = risk.evaluate(self.entries, time.time(), risk.config(self.s["risk"]))
         if rs["blocked"]:
             self.say(rs["why"] + " Отключить: Настройки > Управление рисками.")
-            self.lbl_sig.configure(text="СТОП: риск-менеджмент", fg=AMBER)
+            self.set_sig("СТОП: риск-менеджмент", AMBER)
             return False
         return True
 
@@ -862,14 +891,14 @@ class App(tk.Tk):
 
     def show(self, sym, res, err):
         if err or not res:
-            self.lbl_sig.configure(text="Ошибка", fg=AMBER)
+            self.set_sig("Ошибка", AMBER)
             self.lbl_info.configure(text=err or "нет данных")
             self.put(self.t_reason, [(err or "нет данных", "neg")])
             return
         self.res = res
         col = {"call": GREEN, "put": RED}.get(res["kind"], AMBER)
         self.card.configure(highlightbackground=col)
-        self.lbl_sig.configure(text=f"{sym.replace('_otc', ' OTC')}   {res['signal']}", fg=col)
+        self.set_sig(f"{sym.replace('_otc', ' OTC')}   {res['signal']}", col)
         pay = core.PAYOUTS.get(sym)
         rs = risk.evaluate(self.entries, time.time(), risk.config(self.s["risk"]))
         lines = [f"Балл {res['score']:+d} (порог {res['thr']}), уверенность {res['conf']}%, цена {res['price']:.5g}"]
