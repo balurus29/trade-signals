@@ -486,17 +486,10 @@ def ind_fib(d, hi, lo):
 
 
 def support_resistance(d, hi, lo):
+    """Только уровни минимум с двумя касаниями: слабые не влияют на балл (график показывает те же)."""
     a = atr(d)
     price = d["c"][-1]
-    levels = sorted([d["h"][i] for i in hi] + [d["l"][i] for i in lo])
-    clusters, cur = [], []
-    for lv in levels:
-        if cur and lv - cur[-1] > 0.5 * a:
-            clusters.append(np.mean(cur))
-            cur = []
-        cur.append(lv)
-    if cur:
-        clusters.append(np.mean(cur))
+    clusters = sorted(p for p, t in _levels(d, hi, lo) if t >= 2)
     sup = [x for x in clusters if x <= price]
     res = [x for x in clusters if x > price]
     out = []
@@ -969,8 +962,18 @@ def analyze_symbol(sym, interval, threshold=35, blackout=None, methods=None, wei
                     res["parts"].append((0, f"Старший ТФ {htf}: {names[tr]}, не противоречит сигналу"))
     if res["kind"] in ("call", "put"):
         m, n = expiry_hint(interval, res["conf"])
-        res["exp_min"], res["exp_candles"] = m, n
-        res["exp_text"] = f"Экспирация ориентир: {fmt_minutes(m)} ({n} {'свеча' if n == 1 else 'свечи'})"
+        fixed = opts.get("exp")
+        if fixed:
+            m = int(fixed)
+            n = max(1, round(m * 60 / TF_SECONDS.get(interval, 300)))
+            res["exp_min"], res["exp_candles"] = m, n
+            note = ""
+            if m * 60 > 6 * TF_SECONDS.get(interval, 300):
+                note = ". Срок намного длиннее свечи: точность ниже, лучше взять свечу покрупнее"
+            res["exp_text"] = f"Экспирация (ваша): {fmt_minutes(m)} ({n} {'свеча' if n == 1 else 'свечи' if n < 5 else 'свечей'}){note}"
+        else:
+            res["exp_min"], res["exp_candles"] = m, n
+            res["exp_text"] = f"Экспирация ориентир: {fmt_minutes(m)} ({n} {'свеча' if n == 1 else 'свечи'})"
     return res
 
 
