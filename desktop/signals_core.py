@@ -488,15 +488,7 @@ def ind_fib(d, hi, lo):
 def support_resistance(d, hi, lo):
     a = atr(d)
     price = d["c"][-1]
-    levels = sorted([d["h"][i] for i in hi] + [d["l"][i] for i in lo])
-    clusters, cur = [], []
-    for lv in levels:
-        if cur and lv - cur[-1] > 0.5 * a:
-            clusters.append(np.mean(cur))
-            cur = []
-        cur.append(lv)
-    if cur:
-        clusters.append(np.mean(cur))
+    clusters = [p for p, touches in _levels(d, hi, lo) if touches >= 2]     # те же уровни, что на графике
     sup = [x for x in clusters if x <= price]
     res = [x for x in clusters if x > price]
     out = []

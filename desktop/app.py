@@ -53,7 +53,7 @@ def num(s):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Trade Signals 2.2")
+        self.title("Trade Signals 2.4")
         self.geometry("1560x900")
         self.minsize(1200, 700)
         self.configure(bg=BG)
@@ -80,6 +80,7 @@ class App(tk.Tk):
         self.auto_k = None
         self.pairs = []
         self.q = queue.Queue()
+        self.sw = None      # окно результатов сканера
         self._pv_id = None
         self._load_catalog_cache()
         self.build()
@@ -164,6 +165,7 @@ class App(tk.Tk):
         self.build_left(left)
         self.build_mid(mid)
         self.build_right(right)
+        right.pack_propagate(False)     # ширину задаёт окно, а не содержимое вкладки: график не прыгает
         self.right_w = 450
         self.bind("<Configure>", self.on_resize)
 
@@ -277,6 +279,7 @@ class App(tk.Tk):
             b.grid(row=0, column=i, sticky="ew", padx=2)
             bar.columnconfigure(i, weight=text_w(bar, n, 10) + 14)   # ширина вкладки по длине её названия
             self.tabbtn[n] = b
+        bar.bind("<Configure>", lambda e: self.fit_tabs(e.width))
         self.body = tk.Frame(f, bg=BG)
         self.body.pack(fill="both", expand=True, pady=(8, 0))
         for n, _c in names:
@@ -289,6 +292,16 @@ class App(tk.Tk):
         self.page_settings(self.pages["Настройки"])
         self.tab("Причины")
         self.show_journal()
+
+    def fit_tabs(self, width):
+        """Один размер шрифта на все вкладки: наибольший, при котором влезают все названия."""
+        size = 10
+        while size > 7 and sum(text_w(self, n, size) + 13 for n in self.tabbtn) > width - 20:
+            size -= 1
+        for b in self.tabbtn.values():
+            if b.size != size:
+                b.size = size
+                b.draw()
 
     def set_sig(self, text, fg):
         self.lbl_sig.configure(text=text, fg=fg)
@@ -397,7 +410,7 @@ class App(tk.Tk):
 
     # ── индикаторы ──
     def page_ind(self, f):
-        Label(f, "Готовые наборы (можно включать несколько)", CYAN, 11, True, bg=CARD).pack(anchor="w", padx=10, pady=(10, 4))
+        Label(f, "Готовые наборы (можно несколько)", CYAN, 11, True, bg=CARD).pack(anchor="w", padx=10, pady=(10, 4))
         pf = tk.Frame(f, bg=CARD)
         pf.pack(fill="x", padx=8)
         self.pchips = {}
@@ -517,7 +530,7 @@ class App(tk.Tk):
         def row(label, widget_fn):
             r = tk.Frame(f, bg=CARD)
             r.pack(fill="x", padx=10, pady=3)
-            Label(r, label, DIM, 10, bg=CARD, width=22, anchor="w").pack(side="left")
+            Label(r, label, DIM, 10, bg=CARD, width=25, anchor="w").pack(side="left")
             w = widget_fn(r)
             w.pack(side="left", fill="x", expand=True)
             return w
@@ -534,7 +547,7 @@ class App(tk.Tk):
         Btn(kr2, "Список OTC", self.load_catalog, accent=GREEN, height=28, size=10).pack(side="left", fill="x", expand=True, padx=(6, 0))
         self.e_thr = row("Порог сигнала", lambda r: Field(r, s["thr"]))
         self.e_black = row("Новости (12:25-12:45, ...)", lambda r: Field(r, s["blackout"]))
-        Label(f, "Фильтры (сигнал блокируется, если условие не выполнено)", CYAN, 11, True, bg=CARD).pack(anchor="w", padx=10, pady=(10, 4))
+        Label(f, "Фильтры (блокируют сигнал)", CYAN, 11, True, bg=CARD).pack(anchor="w", padx=10, pady=(10, 4))
         tf = tk.Frame(f, bg=CARD)
         tf.pack(fill="x", padx=8)
         self.b_mtf = Btn(tf, "Старший ТФ", lambda a: s.update(mtf=a), accent=CYAN, toggle=True, active=s["mtf"], height=32, size=10)
@@ -553,7 +566,7 @@ class App(tk.Tk):
         for k, name in (("deposit", "Депозит"), ("stake_pct", "Ставка, % депозита"), ("loss_pct", "Лимит убытка в день, %"),
                         ("streak", "Пауза после N проигрышей"), ("pause_min", "Пауза, минут")):
             self.e_risk[k] = row(name, lambda r, k=k: Field(r, rk.get(k, "")))
-        Label(f, "Настройки сохраняются при закрытии окна. Клавиши: F5, F6, Ctrl+J.", DIM, 9, bg=CARD).pack(anchor="w", padx=10, pady=6)
+        Label(f, "Настройки сохраняются при закрытии окна. Клавиши: F5, F6, Ctrl+J.", DIM, 9, bg=CARD, wraplength=330, justify="left").pack(anchor="w", padx=10, pady=6)
 
     def paste_key(self):
         self.e_key.delete(0, "end")
@@ -699,9 +712,8 @@ class App(tk.Tk):
             self.draw()
 
     # ───────── график ─────────
-    def geom(self):
-        ch = self.chart
-        W, H = self.cv.winfo_width(), self.cv.winfo_height()
+    def geom(self, cv, ch):
+        W, H = cv.winfo_width(), cv.winfo_height()
         pr, pt, pb, pl = 74, 14, 16, 12
         hi, lo = max(ch["h"]), min(ch["l"])
         rng = hi - lo
@@ -712,12 +724,14 @@ class App(tk.Tk):
         return W, H, pl, pr, pt, pb, lo, hi
 
     def draw(self):
-        c = self.cv
+        self.render(self.cv, self.chart, self.res["kind"] if self.sig_info and self.res else None)
+
+    def render(self, c, ch, kind):
+        """Рисует свечи и уровни на холсте c. kind (call/put) добавляет метку направления."""
         c.delete("all")
-        ch = self.chart
         if not ch or not ch["c"]:
             return
-        W, H, pl, pr, pt, pb, lo, hi = self.geom()
+        W, H, pl, pr, pt, pb, lo, hi = self.geom(c, ch)
         if W < 120 or H < 120:
             return
         span = hi - lo
@@ -757,16 +771,16 @@ class App(tk.Tk):
         c.create_line(pl, y(last), W - pr, y(last), fill=CYAN, dash=(2, 3))
         c.create_rectangle(W - pr + 2, y(last) - 10, W - 2, y(last) + 10, fill=CYAN, outline="")
         c.create_text(W - pr + 7, y(last), text=fmt(last), anchor="w", fill="#031018", font=("Consolas", 9, "bold"))
-        if self.sig_info and self.res and self.res["kind"] in ("call", "put"):
-            col = GREEN if self.res["kind"] == "call" else RED
-            c.create_text(pl + 8, pt + 4, anchor="nw", text=("▲ CALL" if self.res["kind"] == "call" else "▼ PUT"),
+        if kind in ("call", "put"):
+            col = GREEN if kind == "call" else RED
+            c.create_text(pl + 8, pt + 4, anchor="nw", text=("▲ CALL" if kind == "call" else "▼ PUT"),
                           fill=col, font=(FONT, 16, "bold"))
 
     def on_move(self, e):
         self.cv.delete("cross")
         if not self.chart:
             return
-        W, H, pl, pr, pt, pb, lo, hi = self.geom()
+        W, H, pl, pr, pt, pb, lo, hi = self.geom(self.cv, self.chart)
         if not (pl <= e.x <= W - pr and pt <= e.y <= H - pb):
             return
         v = hi - (e.y - pt) / (H - pt - pb) * (hi - lo)
@@ -822,9 +836,9 @@ class App(tk.Tk):
         if not pairs:
             self.say("Нечего сканировать: список пуст (проверьте фильтр выплаты)")
             return
-        self.launch(pairs, False)
+        self.launch(pairs, False, True)
 
-    def launch(self, pairs, notify):
+    def launch(self, pairs, notify, scan=False):
         if self.busy:
             return
         itv, thr, bl, methods, weights, opts, inds = self.params()
@@ -847,16 +861,17 @@ class App(tk.Tk):
                     out.append((sym, None, str(ex)))
                     if "ключ" in str(ex) or "квота" in str(ex):
                         break
-            self.ui(lambda: self.done(pairs, itv, out, methods, inds, notify))
+            self.ui(lambda: self.done(pairs, itv, out, methods, inds, notify, scan))
         self.bg(work)
 
-    def done(self, pairs, itv, out, methods, inds, notify):
+    def done(self, pairs, itv, out, methods, inds, notify, scan=False):
         self.busy = False
         self.b_an.disabled = self.b_sc.disabled = False
         now = time.time()
         fire = None
         for sym, res, _err in out:
             if res:
+                res["_at"], res["_tf"] = now, core.TF_SECONDS.get(itv, 300)     # когда и на какой свече получен
                 self.results[sym] = (res, itv)
             if res and res["kind"] in ("call", "put"):
                 if journal.is_new(self.last_sig, sym, res["kind"], now, res["exp_min"]):
@@ -888,6 +903,23 @@ class App(tk.Tk):
                     self.cur = sym
                     self.update_fav()
                 self.show(sym, res, err)
+        if scan:
+            self.open_scan(itv, out)
+
+    def info_lines(self, sym, res):
+        pay = core.PAYOUTS.get(sym)
+        rs = risk.evaluate(self.entries, time.time(), risk.config(self.s["risk"]))
+        lines = [f"Балл {res['score']:+d} (порог {res['thr']}), уверенность {res['conf']}%, цена {res['price']:.5g}"]
+        if res.get("exp_text"):
+            lines.append(res["exp_text"])
+        if pay:
+            lines.append(f"Выплата {pay}%, безубыток {martingale.breakeven(pay / 100) * 100:.1f}%")
+        if rs["stake"]:
+            lines.append(f"Ставка по риск-менеджменту: {rs['stake']}")
+        age = time.time() - res.get("_at", time.time())
+        if res["kind"] in ("call", "put") and age > res.get("_tf", 300):
+            lines.append(f"Сигнал устарел: прошло {int(age // 60)} мин {int(age % 60)} с. Повторите анализ перед входом")
+        return lines
 
     def show(self, sym, res, err):
         if err or not res:
@@ -899,24 +931,152 @@ class App(tk.Tk):
         col = {"call": GREEN, "put": RED}.get(res["kind"], AMBER)
         self.card.configure(highlightbackground=col)
         self.set_sig(f"{sym.replace('_otc', ' OTC')}   {res['signal']}", col)
-        pay = core.PAYOUTS.get(sym)
-        rs = risk.evaluate(self.entries, time.time(), risk.config(self.s["risk"]))
-        lines = [f"Балл {res['score']:+d} (порог {res['thr']}), уверенность {res['conf']}%, цена {res['price']:.5g}"]
-        if res.get("exp_text"):
-            lines.append(res["exp_text"])
-        if pay:
-            lines.append(f"Выплата {pay}%, безубыток {martingale.breakeven(pay / 100) * 100:.1f}%")
-        if rs["stake"]:
-            lines.append(f"Ставка по риск-менеджменту: {rs['stake']}")
-        self.lbl_info.configure(text="\n".join(lines))
-        self.sig_info = {"ts": time.time(), "tf": core.TF_SECONDS.get(self.sel_itv.get(), 300)} if res["kind"] in ("call", "put") else None
+        self.lbl_info.configure(text="\n".join(self.info_lines(sym, res)))
+        self.sig_info = {"ts": res.get("_at", time.time()), "tf": res.get("_tf") or core.TF_SECONDS.get(self.sel_itv.get(), 300)} \
+            if res["kind"] in ("call", "put") else None
         self.chart = res["chart"]
         self.draw()
+        self.put(self.t_reason, self.reason_rows(res))
+        self.tab("Причины")
+
+    @staticmethod
+    def reason_rows(res):
         rows = [("Причины сигнала", "h")]
         for sc, txt in res["parts"]:
             rows.append((f"{sc:+d}  {txt}" if sc else f"      {txt}", "pos" if sc > 0 else "neg" if sc < 0 else "dim"))
-        self.put(self.t_reason, rows)
-        self.tab("Причины")
+        return rows
+
+    # ───────── окно результатов сканера ─────────
+    def open_scan(self, itv, out):
+        def rank(x):
+            sym, res, _err = x
+            if not res:
+                return (2, 0)
+            return (0 if res["kind"] in ("call", "put") else 1, -abs(res["score"]))
+        self.sw_all = sorted(out, key=rank)
+        self.sw_itv, self.sw_at = itv, time.time()
+        if not self.sw:
+            self.build_scan()
+        self.sw_fill()
+        self.sw.lift()
+
+    def build_scan(self):
+        w = self.sw = tk.Toplevel(self)
+        w.title("Результаты сканера")
+        w.configure(bg=BG)
+        w.geometry("1040x640")
+        w.minsize(820, 480)
+        w.protocol("WM_DELETE_WINDOW", self.close_scan)
+        w.columnconfigure(1, weight=1)
+        w.rowconfigure(0, weight=1)
+        left = tk.Frame(w, bg=BG)
+        left.grid(row=0, column=0, sticky="ns", padx=(10, 5), pady=10)
+        self.sw_head = Label(left, "", DIM, 10, wraplength=350, justify="left")
+        self.sw_head.pack(anchor="w")
+        self.sw_only = Btn(left, "Только CALL / PUT", lambda a: self.sw_fill(), accent=GREEN, toggle=True, height=30, size=10)
+        self.sw_only.pack(fill="x", pady=6)
+        tk.Label(left, f"{'Пара':<14}{'Выпл':>5} {'Итог':<8}{'Балл':>5}{'Ув.':>5}", fg=DIM, bg=BG, font=("Consolas", 11)).pack(anchor="w", padx=5)
+        lf = Card(left)
+        lf.pack(fill="both", expand=True)
+        self.sw_lb = tk.Listbox(lf, bg=CARD, fg=FG, selectbackground=mix(CARD, CYAN, 0.45), selectforeground=FG, width=38,
+                                highlightthickness=0, bd=0, activestyle="none", exportselection=False, font=("Consolas", 11))
+        sb = tk.Scrollbar(lf, command=self.sw_lb.yview)
+        self.sw_lb.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.sw_lb.pack(side="left", fill="both", expand=True, padx=4, pady=4)
+        self.sw_lb.bind("<<ListboxSelect>>", lambda e: self.sw_pick())
+        self.sw_lb.bind("<Double-1>", lambda e: self.sw_to_main())
+        right = tk.Frame(w, bg=BG)
+        right.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
+        top = Card(right)
+        top.pack(fill="x")
+        self.sw_title = Label(top, "", FG, 18, True, bg=CARD, wraplength=600)
+        self.sw_title.pack(pady=(10, 2))
+        self.sw_info = Label(top, "", mix(FG, BG, 0.2), 10, bg=CARD, justify="center", wraplength=600)
+        self.sw_info.pack(pady=(0, 10))
+        box = Card(right)
+        box.pack(fill="both", expand=True, pady=8)
+        self.sw_cv = tk.Canvas(box, bg=CARD, highlightthickness=0, width=300, height=240)
+        self.sw_cv.pack(fill="both", expand=True, padx=2, pady=2)
+        self.sw_cv.bind("<Configure>", lambda e: self.sw_draw())
+        rb = Card(right)
+        rb.pack(fill="x")
+        self.sw_reason = self.textbox(rb, height=7)
+        self.sw_btn = Btn(right, "Открыть в главном окне", self.sw_to_main, accent=CYAN, height=36, size=11)
+        self.sw_btn.pack(fill="x", pady=(8, 0))
+        self.sw_cur = None
+
+    def close_scan(self):
+        self.sw.destroy()
+        self.sw = None
+
+    def sw_fill(self):
+        only = self.sw_only.active
+        self.sw_rows = [x for x in self.sw_all if not only or (x[1] and x[1]["kind"] in ("call", "put"))]
+        self.sw_lb.delete(0, "end")
+        for i, (sym, res, _err) in enumerate(self.sw_rows):
+            name = sym.replace("_otc", " OTC")[:13]
+            pay = core.PAYOUTS.get(sym)
+            pay = f"{pay}%" if pay else ""
+            if not res:
+                self.sw_lb.insert("end", f"{name:<14}{pay:>5} ошибка")
+                self.sw_lb.itemconfig(i, fg=DIM)
+                continue
+            kind = res["kind"]
+            verdict = kind.upper() if kind in ("call", "put") else res["signal"].split(":")[0][:7]
+            self.sw_lb.insert("end", f"{name:<14}{pay:>5} {verdict:<8}{res['score']:>+5d}{res['conf']:>4}%")
+            self.sw_lb.itemconfig(i, fg=GREEN if kind == "call" else RED if kind == "put" else DIM)
+        self.sw_update_head()
+        if self.sw_rows:
+            self.sw_lb.selection_set(0)
+            self.sw_pick()
+        else:
+            self.sw_cur = None
+            self.sw_title.configure(text="Сигналов нет", fg=DIM)
+            self.sw_info.configure(text="")
+            self.put(self.sw_reason, [])
+            self.sw_draw()
+
+    def sw_update_head(self):
+        age = int(time.time() - self.sw_at)
+        found = sum(1 for _s, r, _e in self.sw_all if r and r["kind"] in ("call", "put"))
+        self.sw_head.configure(text=f"Свеча {self.sw_itv}. Проверено {len(self.sw_all)}, сигналов {found}.\n"
+                                    f"Скан был {age // 60}:{age % 60:02d} назад")
+
+    def sw_pick(self):
+        sel = self.sw_lb.curselection()
+        if not sel or sel[0] >= len(self.sw_rows):
+            return
+        sym, res, err = self.sw_cur = self.sw_rows[sel[0]]
+        name = sym.replace("_otc", " OTC")
+        if not res:
+            self.sw_title.configure(text=f"{name}   ошибка", fg=AMBER)
+            self.sw_info.configure(text="")
+            self.put(self.sw_reason, [(err or "нет данных", "neg")])
+        else:
+            col = {"call": GREEN, "put": RED}.get(res["kind"], AMBER)
+            self.sw_title.configure(text=f"{name}   {res['signal']}", fg=col)
+            self.sw_info.configure(text="\n".join(self.info_lines(sym, res)))
+            self.put(self.sw_reason, self.reason_rows(res))
+        self.sw_draw()
+
+    def sw_draw(self):
+        res = self.sw_cur[1] if self.sw_cur else None
+        self.render(self.sw_cv, res.get("chart") if res else None, res["kind"] if res else None)
+
+    def sw_to_main(self):
+        if not self.sw_cur:
+            return
+        sym, res, err = self.sw_cur
+        self.lb.selection_clear(0, "end")
+        if sym in self.pairs:
+            i = self.pairs.index(sym)
+            self.lb.selection_set(i)
+            self.lb.see(i)
+        self.cur = sym
+        self.update_fav()
+        self.show(sym, res, err)
+        self.lift()
 
     # ───────── авто, таймеры, журнал ─────────
     def on_auto(self, active):
@@ -932,6 +1092,8 @@ class App(tk.Tk):
                                           f"{int((sg['tf'] - now % sg['tf']) // 60)}:{int((sg['tf'] - now % sg['tf']) % 60):02d}")
         elif self.cur:
             self.lbl_timer.configure(text="")
+        if self.sw:
+            self.sw_update_head()
         if self.b_auto.active and self.cur and not self.busy:
             tf = core.TF_SECONDS.get(self.sel_itv.get(), 300)
             k = int(now // tf)
