@@ -1,5 +1,6 @@
 """Виджеты в неоновом стиле для Tkinter: скруглённые кнопки, выпадающий выбор, поля с рабочей вставкой."""
 import tkinter as tk
+import tkinter.font as tkfont
 
 BG = "#070b17"
 PANEL = "#0e1428"
@@ -14,6 +15,24 @@ GREEN = "#2ee58a"
 RED = "#ff4d6b"
 AMBER = "#ffb833"
 FONT = "Segoe UI"
+
+
+_widths = {}
+
+
+def text_w(widget, text, size, bold=True):
+    """Ширина текста в пикселях (с кэшем: кнопки перерисовываются часто)."""
+    key = (text, size, bold)
+    if key not in _widths:
+        _widths[key] = tkfont.Font(root=widget, family=FONT, size=size, weight="bold" if bold else "normal").measure(text)
+    return _widths[key]
+
+
+def fit_size(widget, text, size, bold, avail, low=7):
+    """Наибольший размер шрифта не больше size, при котором текст влезает в одну строку шириной avail."""
+    while size > low and text_w(widget, text, size, bold) > avail:
+        size -= 1
+    return size
 
 
 def mix(a, b, t):
@@ -87,8 +106,10 @@ class Btn(tk.Canvas):
         if self.disabled:
             col = DIM
         pad = 24 if self.arrow else 6
+        avail = max(20, w - pad - 6)
+        size = fit_size(self, self.text, self.size, self.bold, avail)
         self.create_text((w - (22 if self.arrow else 0)) / 2, h / 2, text=self.text, fill=col,
-                         font=(FONT, self.size, "bold" if self.bold else "normal"), width=max(20, w - pad - 6))
+                         font=(FONT, size, "bold" if self.bold else "normal"), width=avail)
         if self.arrow:
             ax, ay = w - 16, h / 2
             self.create_line(ax - 4, ay - 2, ax, ay + 2, ax + 4, ay - 2, fill=acc, width=2)
