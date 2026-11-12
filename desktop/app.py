@@ -53,7 +53,7 @@ def num(s):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Trade Signals 2.6")
+        self.title("Trade Signals 2.7")
         self.geometry("1560x900")
         self.minsize(1200, 700)
         self.configure(bg=BG)
@@ -80,7 +80,7 @@ class App(tk.Tk):
         self.auto_k = None
         self.pairs = []
         self.q = queue.Queue()
-        self.sw = None      # окно результатов сканера
+        self.sw = None      # вкладка результатов сканера
         self.scanning = None    # (проверено, всего), пока идёт скан
         self.stop_scan = False
         self._beep_at = 0
@@ -276,7 +276,8 @@ class App(tk.Tk):
         bar = tk.Frame(f, bg=BG)
         bar.pack(fill="x")
         self.pages, self.tabbtn = {}, {}
-        names = [("Причины", CYAN), ("Журнал", GREEN), ("Индикаторы", VIOLET), ("Мартингейл", RED), ("Настройки", AMBER)]
+        names = [("Причины", CYAN), ("Сканер", "#ff8a3d"), ("Журнал", GREEN), ("Индикаторы", VIOLET),
+                 ("Мартингейл", RED), ("Настройки", AMBER)]
         for i, (n, col) in enumerate(names):
             b = Btn(bar, n, lambda a, n=n: self.tab(n), accent=col, toggle=True, height=34, size=10)
             b.grid(row=0, column=i, sticky="ew", padx=2)
@@ -289,6 +290,7 @@ class App(tk.Tk):
             fr = Card(self.body)
             self.pages[n] = fr
         self.t_reason = self.textbox(self.pages["Причины"])
+        self.build_scan(self.pages["Сканер"])
         self.page_journal(self.pages["Журнал"])
         self.page_ind(self.pages["Индикаторы"])
         self.page_mg(self.pages["Мартингейл"])
@@ -665,6 +667,9 @@ class App(tk.Tk):
                 self.lb.itemconfig(i, fg=sr[2])
         if keep in self.pairs:
             i = self.pairs.index(keep)
+        elif keep and keep in self.results:     # открыта пара из другой группы (например, из скана): не сбрасываем
+            self.update_fav()
+            return
         elif self.pairs:
             i = 0
         else:
@@ -874,7 +879,10 @@ class App(tk.Tk):
             self.b_sc.disabled = False
             self.b_sc.set(text="Стоп  F6")
             self.scanning = (0, len(pairs))
-            self.open_scan(itv, [])
+            try:
+                self.open_scan(itv, [])
+            except Exception as ex:         # ошибка интерфейса не должна оставлять кнопки заблокированными
+                self.say(f"Ошибка вкладки «Сканер»: {ex}")
 
         def work():
             out = []
@@ -945,7 +953,7 @@ class App(tk.Tk):
         stopped = " Скан остановлен." if self.stop_scan and len(out) < len(pairs) else ""
         self.say(f"Готово: проверено {len(out)}, сигналов {found}.{stopped}" + (f" Ошибка: {errs[0]}" if errs else ""))
         self.show_journal()
-        if not out:
+        if not out or (scan and self.sw_user):     # пользователь уже выбрал пару во вкладке «Сканер»
             return
         pick = self.cur if any(s == self.cur for s, _r, _e in out) else out[0][0]
         if len(out) > 1:
@@ -961,7 +969,13 @@ class App(tk.Tk):
                     self.lb.see(i)
                     self.cur = sym
                     self.update_fav()
-                self.show(sym, res, err)
+                self.show(sym, res, err, keep_tab=scan)
+                if scan:
+                    syms = [x[0] for x in self.sw_rows]
+                    if sym in syms:
+                        self.sw_cur = (sym, res, err)
+                        self.sw_lb.selection_clear(0, "end")
+                        self.sw_lb.selection_set(syms.index(sym))
 
     def info_lines(self, sym, res):
         pay = core.PAYOUTS.get(sym)
@@ -978,7 +992,7 @@ class App(tk.Tk):
             lines.append(f"Сигнал устарел: прошло {int(age // 60)} мин {int(age % 60)} с. Повторите анализ перед входом")
         return lines
 
-    def show(self, sym, res, err):
+    def show(self, sym, res, err, keep_tab=False):
         if err or not res:
             self.set_sig("Ошибка", AMBER)
             self.lbl_info.configure(text=err or "нет данных")
@@ -994,7 +1008,8 @@ class App(tk.Tk):
         self.chart = res["chart"]
         self.draw()
         self.put(self.t_reason, self.reason_rows(res))
-        self.tab("Причины")
+        if not keep_tab:
+            self.tab("Причины")
 
     @staticmethod
     def reason_rows(res):
@@ -1003,7 +1018,7 @@ class App(tk.Tk):
             rows.append((f"{sc:+d}  {txt}" if sc else f"      {txt}", "pos" if sc > 0 else "neg" if sc < 0 else "dim"))
         return rows
 
-    # ───────── окно результатов сканера ─────────
+    # ───────── вкладка «Сканер» (результаты скана) ─────────
     @staticmethod
     def sw_rank(x):
         sym, res, _err = x
@@ -1011,144 +1026,83 @@ class App(tk.Tk):
             return (2, 0)
         return (0 if res["kind"] in ("call", "put") else 1, -abs(res["score"]))
 
+    def build_scan(self, f):
+        self.sw = f
+        self.sw_all, self.sw_rows, self.sw_cur = [], [], None
+        self.sw_itv, self.sw_at, self.sw_user = "", 0, False
+        self.sw_head = Label(f, "Скан ещё не запускался. Нажмите «Сканер» (F6).", DIM, 10, bg=CARD,
+                             wraplength=330, justify="left")
+        self.sw_head.pack(anchor="w", fill="x", padx=10, pady=(10, 4))
+        self.sw_only = Btn(f, "Только CALL / PUT", lambda a: self.sw_fill(self.sw_cur[0] if self.sw_cur else None),
+                           accent=GREEN, toggle=True, height=30, size=10, bg=CARD)
+        self.sw_only.pack(fill="x", padx=10, pady=4)
+        tk.Label(f, text=f"{'Пара':<13}{'Выпл':>5} {'Итог':<6}{'Балл':>5}{'Ув.':>5}", fg=DIM, bg=CARD,
+                 font=("Consolas", 10)).pack(anchor="w", padx=14)
+        self.sw_lb = tk.Listbox(f, bg=CARD, fg=FG, selectbackground=mix(CARD, CYAN, 0.45), selectforeground=FG,
+                                highlightthickness=0, bd=0, activestyle="none", exportselection=False,
+                                font=("Consolas", 10), width=10)
+        sb = tk.Scrollbar(f, command=self.sw_lb.yview)
+        self.sw_lb.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y", pady=(0, 8))
+        self.sw_lb.pack(fill="both", expand=True, padx=(10, 0), pady=(0, 8))
+        self.sw_lb.bind("<<ListboxSelect>>", lambda e: self.sw_pick())
+        Label(f, "Нажмите на пару: сигнал, график и причины откроются в центре окна.", DIM, 9, bg=CARD,
+              wraplength=330, justify="left").pack(anchor="w", padx=10, pady=(0, 8))
+
     def open_scan(self, itv, out):
         self.sw_all = sorted(out, key=self.sw_rank)
         self.sw_itv, self.sw_at = itv, time.time()
-        self.sw_user = False        # пока пользователь сам не выбрал строку, подсвечиваем лучший сигнал
-        if not self.sw:
-            self.build_scan()
+        self.sw_user = False
+        self.sw_cur = None
         self.sw_fill()
-        self.sw.lift()
+        self.tab("Сканер")
 
     def sw_add(self, item):
         self.sw_all.append(item)
         self.sw_all.sort(key=self.sw_rank)
         self.sw_at = time.time()
-        keep = self.sw_cur[0] if (self.sw_user and self.sw_cur) else None
-        self.sw_fill(keep)
-
-    def build_scan(self):
-        w = self.sw = tk.Toplevel(self)
-        w.title("Результаты сканера")
-        w.configure(bg=BG)
-        w.geometry("1040x640")
-        w.minsize(820, 480)
-        w.protocol("WM_DELETE_WINDOW", self.close_scan)
-        w.columnconfigure(1, weight=1)
-        w.rowconfigure(0, weight=1)
-        left = tk.Frame(w, bg=BG)
-        left.grid(row=0, column=0, sticky="ns", padx=(10, 5), pady=10)
-        self.sw_head = Label(left, "", DIM, 10, wraplength=350, justify="left")
-        self.sw_head.pack(anchor="w")
-        self.sw_only = Btn(left, "Только CALL / PUT", lambda a: self.sw_fill(self.sw_cur[0] if self.sw_cur else None), accent=GREEN, toggle=True, height=30, size=10)
-        self.sw_only.pack(fill="x", pady=6)
-        tk.Label(left, f"{'Пара':<14}{'Выпл':>5} {'Итог':<8}{'Балл':>5}{'Ув.':>5}", fg=DIM, bg=BG, font=("Consolas", 11)).pack(anchor="w", padx=5)
-        lf = Card(left)
-        lf.pack(fill="both", expand=True)
-        self.sw_lb = tk.Listbox(lf, bg=CARD, fg=FG, selectbackground=mix(CARD, CYAN, 0.45), selectforeground=FG, width=38,
-                                highlightthickness=0, bd=0, activestyle="none", exportselection=False, font=("Consolas", 11))
-        sb = tk.Scrollbar(lf, command=self.sw_lb.yview)
-        self.sw_lb.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.sw_lb.pack(side="left", fill="both", expand=True, padx=4, pady=4)
-        self.sw_lb.bind("<<ListboxSelect>>", lambda e: (setattr(self, "sw_user", True), self.sw_pick()))
-        self.sw_lb.bind("<Double-1>", lambda e: self.sw_to_main())
-        right = tk.Frame(w, bg=BG)
-        right.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
-        top = Card(right)
-        top.pack(fill="x")
-        self.sw_title = Label(top, "", FG, 18, True, bg=CARD, wraplength=600)
-        self.sw_title.pack(pady=(10, 2))
-        self.sw_info = Label(top, "", mix(FG, BG, 0.2), 10, bg=CARD, justify="center", wraplength=600)
-        self.sw_info.pack(pady=(0, 10))
-        box = Card(right)
-        box.pack(fill="both", expand=True, pady=8)
-        self.sw_cv = tk.Canvas(box, bg=CARD, highlightthickness=0, width=300, height=240)
-        self.sw_cv.pack(fill="both", expand=True, padx=2, pady=2)
-        self.sw_cv.bind("<Configure>", lambda e: self.sw_draw())
-        rb = Card(right)
-        rb.pack(fill="x")
-        self.sw_reason = self.textbox(rb, height=7)
-        self.sw_btn = Btn(right, "Открыть в главном окне", self.sw_to_main, accent=CYAN, height=36, size=11)
-        self.sw_btn.pack(fill="x", pady=(8, 0))
-        self.sw_cur = None
-
-    def close_scan(self):
-        self.sw.destroy()
-        self.sw = None
+        self.sw_fill(self.sw_cur[0] if self.sw_cur else None)
 
     def sw_fill(self, keep=None):
-        top = self.sw_lb.yview()[0] if keep else 0
+        top = self.sw_lb.yview()[0]
         only = self.sw_only.active
         self.sw_rows = [x for x in self.sw_all if not only or (x[1] and x[1]["kind"] in ("call", "put"))]
         self.sw_lb.delete(0, "end")
         for i, (sym, res, _err) in enumerate(self.sw_rows):
-            name = sym.replace("_otc", " OTC")[:13]
+            name = sym.replace("_otc", " OTC")[:12]
             pay = core.PAYOUTS.get(sym)
             pay = f"{pay}%" if pay else ""
             if not res:
-                self.sw_lb.insert("end", f"{name:<14}{pay:>5} ошибка")
+                self.sw_lb.insert("end", f"{name:<13}{pay:>5} ошибка")
                 self.sw_lb.itemconfig(i, fg=DIM)
                 continue
             kind = res["kind"]
-            verdict = kind.upper() if kind in ("call", "put") else res["signal"].split(":")[0][:7]
-            self.sw_lb.insert("end", f"{name:<14}{pay:>5} {verdict:<8}{res['score']:>+5d}{res['conf']:>4}%")
+            verdict = kind.upper() if kind in ("call", "put") else res["signal"].split(":")[0][:5]
+            self.sw_lb.insert("end", f"{name:<13}{pay:>5} {verdict:<6}{res['score']:>+5d}{res['conf']:>4}%")
             self.sw_lb.itemconfig(i, fg=GREEN if kind == "call" else RED if kind == "put" else DIM)
-        self.sw_update_head()
         syms = [x[0] for x in self.sw_rows]
-        if keep in syms:                    # выбор пользователя не сбрасываем
+        if keep in syms:                    # выбранная строка и прокрутка не сбрасываются
             self.sw_lb.selection_set(syms.index(keep))
-            self.sw_lb.yview_moveto(top)
-            if self.sw_cur and self.sw_cur[0] == keep:
-                return
-            self.sw_pick()
-        elif self.sw_rows:
-            self.sw_lb.selection_set(0)
-            self.sw_lb.see(0)
-            self.sw_pick()
-        else:
-            self.sw_cur = None
-            self.sw_title.configure(text="Сканирую..." if self.scanning else "Сигналов нет", fg=DIM)
-            self.sw_info.configure(text="")
-            self.put(self.sw_reason, [])
-            self.sw_draw()
+        self.sw_lb.yview_moveto(top)
+        self.sw_update_head()
 
     def sw_update_head(self):
-        age = int(time.time() - self.sw_at)
         found = sum(1 for _s, r, _e in self.sw_all if r and r["kind"] in ("call", "put"))
         if self.scanning:
             done, total = self.scanning
             self.sw_head.configure(text=f"Свеча {self.sw_itv}. Сканирую {done}/{total}, сигналов {found}.\n"
-                                        "Результаты появляются по мере проверки")
-            return
-        self.sw_head.configure(text=f"Свеча {self.sw_itv}. Проверено {len(self.sw_all)}, сигналов {found}.\n"
-                                    f"Скан был {age // 60}:{age % 60:02d} назад")
+                                        "Пары появляются по мере проверки")
+        elif self.sw_at:
+            age = int(time.time() - self.sw_at)
+            self.sw_head.configure(text=f"Свеча {self.sw_itv}. Проверено {len(self.sw_all)}, сигналов {found}.\n"
+                                        f"Скан был {age // 60}:{age % 60:02d} назад")
 
     def sw_pick(self):
         sel = self.sw_lb.curselection()
         if not sel or sel[0] >= len(self.sw_rows):
             return
+        self.sw_user = True
         sym, res, err = self.sw_cur = self.sw_rows[sel[0]]
-        name = sym.replace("_otc", " OTC")
-        if not res:
-            self.sw_title.configure(text=f"{name}   ошибка", fg=AMBER)
-            self.sw_info.configure(text="")
-            self.put(self.sw_reason, [(err or "нет данных", "neg")])
-        else:
-            col = {"call": GREEN, "put": RED}.get(res["kind"], AMBER)
-            self.sw_title.configure(text=f"{name}   {res['signal']}", fg=col)
-            self.sw_info.configure(text="\n".join(self.info_lines(sym, res)))
-            self.put(self.sw_reason, self.reason_rows(res))
-        self.sw_draw()
-
-    def sw_draw(self):
-        res = self.sw_cur[1] if self.sw_cur else None
-        self.render(self.sw_cv, res.get("chart") if res else None, res["kind"] if res else None)
-
-    def sw_to_main(self):
-        if not self.sw_cur:
-            return
-        sym, res, err = self.sw_cur
         self.lb.selection_clear(0, "end")
         if sym in self.pairs:
             i = self.pairs.index(sym)
@@ -1156,8 +1110,7 @@ class App(tk.Tk):
             self.lb.see(i)
         self.cur = sym
         self.update_fav()
-        self.show(sym, res, err)
-        self.lift()
+        self.show(sym, res, err, keep_tab=True)
 
     # ───────── авто, таймеры, журнал ─────────
     def on_auto(self, active):
