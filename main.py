@@ -32,6 +32,7 @@ COLORS = {"call": (0.2, 0.95, 0.5, 1), "put": (1.0, 0.3, 0.42, 1),
           "wait": (0.6, 0.68, 0.85, 1), "pause": (1.0, 0.72, 0.2, 1)}
 HEX = {"call": "33f280", "put": "ff4d6b", "wait": "99aad9", "pause": "ffb833"}
 FAV = "Избранное"
+SCAN_STATUS = None      # функция пара -> (текст, цвет) или None: итог последнего скана в списке выбора пар
 SCAN_SCOPES = ("Текущая группа", "Все OTC", "Избранное", "Выбранные вручную")
 STATUS_RU = {"win": ("плюс", "33f280"), "loss": ("минус", "ff4d6b"), "draw": ("ничья", "99aad9"),
              "stale": ("не проверен", "ffb833"), "pending": ("ждёт", "99aad9")}
@@ -205,6 +206,12 @@ class NeonOption(ButtonBehavior, BoxLayout):
                          size_hint_x=None, width=dp(62))
         self.pay.bind(size=lambda w, val: setattr(w, "text_size", val))
         self.add_widget(self.name)
+        st = SCAN_STATUS(value) if SCAN_STATUS else None
+        if st:              # итог и уверенность последнего скана этой пары
+            self.sig = Label(text=f"[color={st[1]}]{st[0]}[/color]", markup=True, font_size=sp(14), bold=True,
+                             halign="right", valign="middle", size_hint_x=None, width=dp(96))
+            self.sig.bind(size=lambda w, val: setattr(w, "text_size", val))
+            self.add_widget(self.sig)
         self.add_widget(self.pay)
         self.bind(pos=self._draw, size=self._draw, state=self._draw, selected=self._draw)
         self._draw()
@@ -342,6 +349,10 @@ class Root(BoxLayout):
         self.entries = journal.load(os.path.join(self.dir, "journal.json"))
         self.last_sig = {}
         self.settling = set()
+        self.results = {}           # пара -> (результат, свеча): для процентов в списке пар
+        self._only = False          # в списке сканера только CALL/PUT
+        global SCAN_STATUS
+        SCAN_STATUS = self.scan_status
         self._busy = False
         self._ev = None
         core.OTC_KEY = self._read_text("otc_key.txt")
@@ -404,7 +415,7 @@ class Root(BoxLayout):
         self.btn = GlowButton(text="Анализ", glow_color=list(CYAN), glow_a=0.6, fill=[0.0, 0.25, 0.32, 0.9])
         self.btn.bind(on_release=lambda *_: self.run())
         self.scan_btn = GlowButton(text="Сканер", glow_color=list(VIOLET), glow_a=0.6, fill=[0.2, 0.1, 0.36, 0.9])
-        self.scan_btn.bind(on_release=lambda *_: self.open_scan())
+        self.scan_btn.bind(on_release=lambda *_: self.scan_or_stop())
         self.auto = GlowButton(text="Авто", toggle=True, size_hint_x=0.4, glow_color=list(COLORS["call"]),
                                glow_a=0.35, fill=[0.05, 0.2, 0.12, 0.9])
         self.auto.bind(active=self.on_auto)
@@ -436,6 +447,10 @@ class Root(BoxLayout):
         self.reasons = wrap_label("", size=14, markup=True)
         self.reasons.bind(on_ref_press=self._on_ref)
         self._list_itv, self._list_results = None, []
+        self._scan = None           # (проверено, всего), пока идёт скан нескольких пар
+        self._stop = False
+        self._detail = False        # открыт разбор одной пары из списка сканера
+        self._list_kind = None
         sv = ScrollView(bar_width=dp(3))
         sv.add_widget(self.reasons)
         panel = GlowBox(padding=dp(10), glow_color=[0.62, 0.36, 1.0, 1], glow_a=0.15)
@@ -1240,6 +1255,14 @@ class Root(BoxLayout):
             self._sc_update()
         pop.open()
 
+    def scan_or_stop(self):
+        """Во время скана кнопка «Сканер» превращается в «Стоп»."""
+        if self._scan:
+            self._stop = True
+            self.scan_btn.text = "Останавливаю..."
+            return
+        self.open_scan()
+
     def start_scan(self):
         pairs = self.scan_pairs()
         self.sc_pop.dismiss()
@@ -1265,40 +1288,84 @@ class Root(BoxLayout):
         self.btn.disabled = self.scan_btn.disabled = True
         self.style_signal("wait", "Загрузка...")
         itv, thr, bl, methods, weights, opts, inds = self.params()
+        self._stop = False
+        if len(pairs) > 1:
+            self._scan = (0, len(pairs))
+            self._list_itv, self._list_results = itv, []
+            self._detail, self._list_kind = False, None
+            self.scan_btn.disabled = False
+            self.scan_btn.text = "Стоп"
+            self.show_list(itv, self._list_results)
         threading.Thread(target=self._work, args=(pairs, itv, thr, bl, methods, weights, opts, inds, notify),
                          daemon=True).start()
 
     def _work(self, pairs, itv, thr, bl, methods, weights, opts, inds, notify):
         results = []
         for i, sym in enumerate(pairs, 1):
-            if len(pairs) > 1:
-                Clock.schedule_once(lambda dt, i=i, s=sym: self.style_signal(
-                    "wait", f"Анализ {i}/{len(pairs)}: {s}"))
+            if self._stop:
+                break
             try:
                 res = core.analyze_symbol(sym, itv, thr, bl, methods, weights, opts, inds)
-                results.append((sym, res, None if res else "Недостаточно свечей для анализа"))
+                item = (sym, res, None if res else "Недостаточно свечей для анализа")
             except Exception as e:
-                msg = str(e)
-                results.append((sym, None, msg))
-                if "ключ" in msg or "квота" in msg:
-                    break
+                item = (sym, None, str(e))
+            results.append(item)
+            if len(pairs) > 1:      # результат пары показываем сразу, не дожидаясь конца скана
+                Clock.schedule_once(lambda dt, x=item, i=i: self._got(x, itv, notify, methods, inds, i, len(pairs)))
+            if item[2] and ("ключ" in item[2] or "квота" in item[2]):
+                break
         Clock.schedule_once(lambda dt: self._done(pairs, itv, results, notify, methods, inds))
+
+    def scan_status(self, sym):
+        hit = self.results.get(sym)
+        if not hit or hit[1] != self.interval.text:
+            return None
+        res = hit[0]
+        kind = res["kind"]
+        verdict = kind.upper() if kind in ("call", "put") else res["signal"].split(":")[0].split(" ")[0][:5]
+        col = HEX.get(kind, "99aad9")
+        if time.time() - res.get("_at", 0) > core.TF_SECONDS.get(hit[1], 300):     # прошла свеча: устарел
+            col = "5c6688"
+        return f"{verdict} {res['conf']}%", col
+
+    def _got(self, item, itv, notify, methods, inds, i, total):
+        """Одна пара из скана: записать сигнал и сразу добавить её в список."""
+        sym, res, _err = item
+        now = time.time()
+        if res:
+            res["_at"] = now
+            self.results[sym] = (res, itv)
+        if res and res["kind"] in ("call", "put"):
+            self._register(sym, itv, res, methods, notify, now, inds)
+        else:
+            self.last_sig.pop(sym, None)
+        self._list_results.append(item)
+        self._scan = (i, total)
+        if not self._detail:
+            self.show_list(itv, self._list_results)
 
     def _done(self, pairs, itv, results, notify, methods, inds):
         self._busy = False
         self.btn.disabled = self.scan_btn.disabled = False
-        now = time.time()
-        for sym, res, _err in results:
-            if res and res["kind"] in ("call", "put"):
-                self._register(sym, itv, res, methods, notify, now, inds)
-            else:
-                self.last_sig.pop(sym, None)
-        self._list_ts = now
+        self.scan_btn.text = "Сканер"
+        self._list_ts = time.time()
         if len(pairs) == 1:
             sym, res, err = results[0]
-            self.show(sym, itv, res, err)
-        else:
-            self.show_list(itv, results)
+            if res:
+                res["_at"] = time.time()
+                self.results[sym] = (res, itv)
+            if res and res["kind"] in ("call", "put"):
+                self._register(sym, itv, res, methods, notify, time.time(), inds)
+            elif res:
+                self.last_sig.pop(sym, None)
+            self._scan = None
+            self.show(sym, itv, res, err, ts=res.get("_at") if res else None)
+            return
+        stopped = self._stop and len(results) < len(pairs)
+        self._scan = None
+        self._list_kind = None
+        if not self._detail:
+            self.show_list(itv, self._list_results, stopped)
 
     def _register(self, sym, itv, res, methods, notify, now, inds):
         if not journal.is_new(self.last_sig, sym, res["kind"], now, res["exp_min"]):
@@ -1332,13 +1399,20 @@ class Root(BoxLayout):
 
     def _on_ref(self, _w, ref):
         """Нажатие на пару в списке сканера открывает подробное объяснение сигнала."""
+        if ref == "__only__":
+            self._only = not self._only
+            self.show_list(self._list_itv, self._list_results)
+            return
         if ref == "__back__":
+            self._detail = False
+            self._list_kind = None
             if self._list_results:
                 self.show_list(self._list_itv, self._list_results)
             return
         for sym, res, _err in self._list_results:
             if sym == ref and res:
-                self.show(sym, self._list_itv, res, None, back=True, ts=getattr(self, "_list_ts", None))
+                self._detail = True
+                self.show(sym, self._list_itv, res, None, back=True, ts=res.get("_at"))
                 return
 
     def risk_cfg(self):
@@ -1382,29 +1456,42 @@ class Root(BoxLayout):
         self.reasons.text = "\n".join(lines)
         self._tick_timer(0)
 
-    def show_list(self, itv, results):
+    def show_list(self, itv, results, stopped=False):
         self._list_itv, self._list_results = itv, results
         good = [(s, r) for s, r, _ in results if r]
         errs = [e for _, r, e in results if not r and e]
-        good.sort(key=lambda x: -abs(x[1]["score"]))
+        good.sort(key=lambda x: (x[1]["kind"] not in ("call", "put"), -abs(x[1]["score"])))
         active = [x for x in good if x[1]["kind"] in ("call", "put")]
-        self.style_signal("call" if active else "wait", f"Сигналов: {len(active)} из {len(results)}")
+        kind = "call" if active else "wait"
+        if self._scan:
+            title = f"Сканирую {self._scan[0]}/{self._scan[1]} | сигналов {len(active)}"
+        else:
+            title = f"Сигналов: {len(active)} из {len(results)}" + (" (стоп)" if stopped else "")
+        if kind != self._list_kind:         # анимацию не перезапускаем на каждой паре
+            self._list_kind = kind
+            self.style_signal(kind, title)
+        else:
+            self.signal.text = title
         self.info.text = f"Таймфрейм {itv}" + (f" | ошибок: {len(errs)} ({errs[0][:60]})" if errs else "")
         if good:
             self.chart.data = good[0][1].get("chart")
         lines = []
-        for s, r in good:
+        shown = active if self._only else good
+        for s, r in shown:
             exp = f"  {r['exp_min']}м" if r.get("exp_min") else ""
             pv = core.PAYOUTS.get(s)
             pay = f"  [{pv}%]" if pv else ""
             lines.append(f"[ref={s}][color={HEX[r['kind']]}]{s:<10} {r['signal'].split(' ')[0]:<6} "
                          f"{r['score']:+d} ({r['conf']}%){exp}{pay}[/color][/ref]")
-        if lines:
-            lines.insert(0, "[color=99aad9]Нажмите на пару, чтобы увидеть, почему такой сигнал[/color]")
+        if good:
+            sw = "Показать все пары" if self._only else "Показать только CALL / PUT"
+            lines.insert(0, f"[ref=__only__][color=00d9ff][b]{sw}[/b][/color][/ref]")
+            lines.insert(1, "[color=99aad9]Нажмите на пару, чтобы увидеть, почему такой сигнал[/color]")
             sl = self.stake_line()
             if sl:
-                lines.insert(1, sl)
-        self.reasons.text = "\n".join(lines) or (errs[0] if errs else "Нет данных")
+                lines.insert(2, sl)
+        self.reasons.text = "\n".join(lines) or (errs[0] if errs else
+                                                   "Результаты появятся здесь по мере проверки пар..." if self._scan else "Нет данных")
 
     # ───────── авто-режим ─────────
     def on_auto(self, _w, active):

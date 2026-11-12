@@ -4,7 +4,7 @@ package.name = tradesignals
 package.domain = org.example
 source.dir = .
 source.include_exts = py
-version = 0.2
+version = 0.3
 requirements = python3,kivy==2.3.0,numpy,certifi,plyer
 orientation = portrait
 fullscreen = 0
