@@ -53,7 +53,7 @@ def num(s):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Trade Signals 2.4")
+        self.title("Trade Signals 2.5")
         self.geometry("1560x900")
         self.minsize(1200, 700)
         self.configure(bg=BG)
@@ -187,7 +187,7 @@ class App(tk.Tk):
         r = tk.Frame(f, bg=BG)
         r.pack(fill="x", pady=3)
         r.columnconfigure(1, weight=1)
-        self.sel_itv = Select(r, list(core.TF_LIST), self.s["interval"], "Время свечи", lambda v: self.load_preview(),
+        self.sel_itv = Select(r, list(core.TF_LIST), self.s["interval"], "Время свечи", lambda v: (self.fill_pairs(), self.load_preview()),
                               accent=AMBER, width=96, height=38)
         self.sel_itv.grid(row=0, column=0, padx=(0, 5))
         self.sel_exp = Select(r, EXP_VALUES, self.s["exp"] if self.s["exp"] in EXP_VALUES else "Авто",
@@ -631,11 +631,25 @@ class App(tk.Tk):
             pairs = keep
         return sorted(pairs, key=lambda p: -(core.PAYOUTS.get(p) or 0))
 
+    def scan_res(self, p):
+        """Последний результат анализа пары на текущей свече: (итог, уверенность, цвет) или None."""
+        hit = self.results.get(p)
+        if not hit or hit[1] != self.sel_itv.get():
+            return None
+        res = hit[0]
+        kind = res["kind"]
+        verdict = kind.upper() if kind in ("call", "put") else res["signal"].split(":")[0][:5]
+        col = GREEN if kind == "call" else RED if kind == "put" else DIM
+        if time.time() - res.get("_at", 0) > res.get("_tf", 300):      # прошла свеча: результат устарел
+            col = mix(DIM, BG, 0.3)
+        return verdict, res.get("conf", 0), col
+
     def row_text(self, p):
         pay = core.PAYOUTS.get(p)
-        sg = self.last_sig.get(p)
         star = "★" if p in self.s["favs"] else " "
-        return f"{star} {p:<15}{(str(pay) + '%') if pay else '':>5}  {sg[0].upper() if sg else ''}"
+        sr = self.scan_res(p)
+        tail = f"{sr[0]:<5}{sr[1]:>4}%" if sr else ""
+        return f"{star} {p:<14}{(str(pay) + '%') if pay else '':>4} {tail}"
 
     def fill_pairs(self):
         keep = self.cur
@@ -643,9 +657,9 @@ class App(tk.Tk):
         self.lb.delete(0, "end")
         for i, p in enumerate(self.pairs):
             self.lb.insert("end", self.row_text(p))
-            sg = self.last_sig.get(p)
-            if sg:
-                self.lb.itemconfig(i, fg=GREEN if sg[0] == "call" else RED)
+            sr = self.scan_res(p)
+            if sr:
+                self.lb.itemconfig(i, fg=sr[2])
         if keep in self.pairs:
             i = self.pairs.index(keep)
         elif self.pairs:
