@@ -53,7 +53,7 @@ def num(s):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Trade Signals 2.5")
+        self.title("Trade Signals 2.6")
         self.geometry("1560x900")
         self.minsize(1200, 700)
         self.configure(bg=BG)
@@ -81,6 +81,9 @@ class App(tk.Tk):
         self.pairs = []
         self.q = queue.Queue()
         self.sw = None      # окно результатов сканера
+        self.scanning = None    # (проверено, всего), пока идёт скан
+        self.stop_scan = False
+        self._beep_at = 0
         self._pv_id = None
         self._load_catalog_cache()
         self.build()
@@ -854,6 +857,9 @@ class App(tk.Tk):
 
     def launch(self, pairs, notify, scan=False):
         if self.busy:
+            if scan and self.scanning:          # повторное нажатие «Сканер» останавливает скан
+                self.stop_scan = True
+                self.say("Останавливаю скан...")
             return
         itv, thr, bl, methods, weights, opts, inds = self.params()
         if not methods:
@@ -863,45 +869,84 @@ class App(tk.Tk):
             return
         self.busy = True
         self.b_an.disabled = self.b_sc.disabled = True
+        self.stop_scan = False
+        if scan:
+            self.b_sc.disabled = False
+            self.b_sc.set(text="Стоп  F6")
+            self.scanning = (0, len(pairs))
+            self.open_scan(itv, [])
 
         def work():
             out = []
             for i, sym in enumerate(pairs, 1):
+                if self.stop_scan:
+                    break
                 self.ui(lambda i=i, s=sym: self.say(f"Анализ {i}/{len(pairs)}: {s}"))
                 try:
                     res = core.analyze_symbol(sym, itv, thr, bl, methods, weights, opts, inds)
-                    out.append((sym, res, None if res else "Недостаточно свечей"))
+                    item = (sym, res, None if res else "Недостаточно свечей")
                 except Exception as ex:
-                    out.append((sym, None, str(ex)))
-                    if "ключ" in str(ex) or "квота" in str(ex):
-                        break
+                    item = (sym, None, str(ex))
+                out.append(item)
+                # результат пары показываем сразу, не дожидаясь конца скана
+                self.ui(lambda x=item, i=i: self.got(x, itv, methods, inds, scan, i, len(pairs)))
+                if item[2] and ("ключ" in item[2] or "квота" in item[2]):
+                    break
             self.ui(lambda: self.done(pairs, itv, out, methods, inds, notify, scan))
         self.bg(work)
+
+    def got(self, item, itv, methods, inds, scan, i, total):
+        """Результат одной пары: сохранить, записать в журнал, сразу показать в списке и в окне сканера."""
+        sym, res, _err = item
+        now = time.time()
+        if res:
+            res["_at"], res["_tf"] = now, core.TF_SECONDS.get(itv, 300)     # когда и на какой свече получен
+            self.results[sym] = (res, itv)
+        if res and res["kind"] in ("call", "put"):
+            if journal.is_new(self.last_sig, sym, res["kind"], now, res["exp_min"]):
+                self.entries.append(journal.new_entry(sym, itv, res, methods, now, inds if "tech" in methods else [],
+                                                      core.PAYOUTS.get(sym)))
+                if self.s["sound"] and now - self._beep_at > 2:
+                    self._beep_at = now
+                    beep(res["kind"])
+        else:
+            self.last_sig.pop(sym, None)
+        self.update_row(sym)
+        if scan:
+            self.scanning = (i, total)
+            if self.sw:
+                self.sw_add(item)
+
+    def update_row(self, p):
+        if p not in self.pairs:
+            return
+        i = self.pairs.index(p)
+        was = i in self.lb.curselection()
+        self.lb.delete(i)
+        self.lb.insert(i, self.row_text(p))
+        sr = self.scan_res(p)
+        if sr:
+            self.lb.itemconfig(i, fg=sr[2])
+        if was:
+            self.lb.selection_set(i)
 
     def done(self, pairs, itv, out, methods, inds, notify, scan=False):
         self.busy = False
         self.b_an.disabled = self.b_sc.disabled = False
-        now = time.time()
-        fire = None
-        for sym, res, _err in out:
-            if res:
-                res["_at"], res["_tf"] = now, core.TF_SECONDS.get(itv, 300)     # когда и на какой свече получен
-                self.results[sym] = (res, itv)
-            if res and res["kind"] in ("call", "put"):
-                if journal.is_new(self.last_sig, sym, res["kind"], now, res["exp_min"]):
-                    self.entries.append(journal.new_entry(sym, itv, res, methods, now, inds if "tech" in methods else [],
-                                                          core.PAYOUTS.get(sym)))
-                    fire = res["kind"]
-            else:
-                self.last_sig.pop(sym, None)
+        if scan:
+            self.b_sc.set(text="Сканер  F6")
+            self.scanning = None
+            if self.sw:
+                self.sw_update_head()
         journal.save(JRN_PATH, self.entries)
-        if fire and self.s["sound"]:
-            beep(fire)
         self.fill_pairs()
         errs = [f"{s}: {e}" for s, _r, e in out if e]
         found = sum(1 for _s, r, _e in out if r and r["kind"] in ("call", "put"))
-        self.say(f"Готово: проверено {len(out)}, сигналов {found}." + (f" Ошибка: {errs[0]}" if errs else ""))
+        stopped = " Скан остановлен." if self.stop_scan and len(out) < len(pairs) else ""
+        self.say(f"Готово: проверено {len(out)}, сигналов {found}.{stopped}" + (f" Ошибка: {errs[0]}" if errs else ""))
         self.show_journal()
+        if not out:
+            return
         pick = self.cur if any(s == self.cur for s, _r, _e in out) else out[0][0]
         if len(out) > 1:
             best = max((x for x in out if x[1]), key=lambda x: abs(x[1]["score"]), default=None)
@@ -917,8 +962,6 @@ class App(tk.Tk):
                     self.cur = sym
                     self.update_fav()
                 self.show(sym, res, err)
-        if scan:
-            self.open_scan(itv, out)
 
     def info_lines(self, sym, res):
         pay = core.PAYOUTS.get(sym)
@@ -961,18 +1004,28 @@ class App(tk.Tk):
         return rows
 
     # ───────── окно результатов сканера ─────────
+    @staticmethod
+    def sw_rank(x):
+        sym, res, _err = x
+        if not res:
+            return (2, 0)
+        return (0 if res["kind"] in ("call", "put") else 1, -abs(res["score"]))
+
     def open_scan(self, itv, out):
-        def rank(x):
-            sym, res, _err = x
-            if not res:
-                return (2, 0)
-            return (0 if res["kind"] in ("call", "put") else 1, -abs(res["score"]))
-        self.sw_all = sorted(out, key=rank)
+        self.sw_all = sorted(out, key=self.sw_rank)
         self.sw_itv, self.sw_at = itv, time.time()
+        self.sw_user = False        # пока пользователь сам не выбрал строку, подсвечиваем лучший сигнал
         if not self.sw:
             self.build_scan()
         self.sw_fill()
         self.sw.lift()
+
+    def sw_add(self, item):
+        self.sw_all.append(item)
+        self.sw_all.sort(key=self.sw_rank)
+        self.sw_at = time.time()
+        keep = self.sw_cur[0] if (self.sw_user and self.sw_cur) else None
+        self.sw_fill(keep)
 
     def build_scan(self):
         w = self.sw = tk.Toplevel(self)
@@ -987,7 +1040,7 @@ class App(tk.Tk):
         left.grid(row=0, column=0, sticky="ns", padx=(10, 5), pady=10)
         self.sw_head = Label(left, "", DIM, 10, wraplength=350, justify="left")
         self.sw_head.pack(anchor="w")
-        self.sw_only = Btn(left, "Только CALL / PUT", lambda a: self.sw_fill(), accent=GREEN, toggle=True, height=30, size=10)
+        self.sw_only = Btn(left, "Только CALL / PUT", lambda a: self.sw_fill(self.sw_cur[0] if self.sw_cur else None), accent=GREEN, toggle=True, height=30, size=10)
         self.sw_only.pack(fill="x", pady=6)
         tk.Label(left, f"{'Пара':<14}{'Выпл':>5} {'Итог':<8}{'Балл':>5}{'Ув.':>5}", fg=DIM, bg=BG, font=("Consolas", 11)).pack(anchor="w", padx=5)
         lf = Card(left)
@@ -998,7 +1051,7 @@ class App(tk.Tk):
         self.sw_lb.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         self.sw_lb.pack(side="left", fill="both", expand=True, padx=4, pady=4)
-        self.sw_lb.bind("<<ListboxSelect>>", lambda e: self.sw_pick())
+        self.sw_lb.bind("<<ListboxSelect>>", lambda e: (setattr(self, "sw_user", True), self.sw_pick()))
         self.sw_lb.bind("<Double-1>", lambda e: self.sw_to_main())
         right = tk.Frame(w, bg=BG)
         right.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
@@ -1024,7 +1077,8 @@ class App(tk.Tk):
         self.sw.destroy()
         self.sw = None
 
-    def sw_fill(self):
+    def sw_fill(self, keep=None):
+        top = self.sw_lb.yview()[0] if keep else 0
         only = self.sw_only.active
         self.sw_rows = [x for x in self.sw_all if not only or (x[1] and x[1]["kind"] in ("call", "put"))]
         self.sw_lb.delete(0, "end")
@@ -1041,12 +1095,20 @@ class App(tk.Tk):
             self.sw_lb.insert("end", f"{name:<14}{pay:>5} {verdict:<8}{res['score']:>+5d}{res['conf']:>4}%")
             self.sw_lb.itemconfig(i, fg=GREEN if kind == "call" else RED if kind == "put" else DIM)
         self.sw_update_head()
-        if self.sw_rows:
+        syms = [x[0] for x in self.sw_rows]
+        if keep in syms:                    # выбор пользователя не сбрасываем
+            self.sw_lb.selection_set(syms.index(keep))
+            self.sw_lb.yview_moveto(top)
+            if self.sw_cur and self.sw_cur[0] == keep:
+                return
+            self.sw_pick()
+        elif self.sw_rows:
             self.sw_lb.selection_set(0)
+            self.sw_lb.see(0)
             self.sw_pick()
         else:
             self.sw_cur = None
-            self.sw_title.configure(text="Сигналов нет", fg=DIM)
+            self.sw_title.configure(text="Сканирую..." if self.scanning else "Сигналов нет", fg=DIM)
             self.sw_info.configure(text="")
             self.put(self.sw_reason, [])
             self.sw_draw()
@@ -1054,6 +1116,11 @@ class App(tk.Tk):
     def sw_update_head(self):
         age = int(time.time() - self.sw_at)
         found = sum(1 for _s, r, _e in self.sw_all if r and r["kind"] in ("call", "put"))
+        if self.scanning:
+            done, total = self.scanning
+            self.sw_head.configure(text=f"Свеча {self.sw_itv}. Сканирую {done}/{total}, сигналов {found}.\n"
+                                        "Результаты появляются по мере проверки")
+            return
         self.sw_head.configure(text=f"Свеча {self.sw_itv}. Проверено {len(self.sw_all)}, сигналов {found}.\n"
                                     f"Скан был {age // 60}:{age % 60:02d} назад")
 
